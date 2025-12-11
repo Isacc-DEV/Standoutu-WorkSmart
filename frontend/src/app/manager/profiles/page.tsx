@@ -1,42 +1,54 @@
 'use client';
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import ManagerShell from "../../../components/ManagerShell";
 import { api } from "../../../lib/api";
-import { ClientUser } from "../../../lib/auth";
 import { useAuth } from "../../../lib/useAuth";
+import ManagerShell from "../../../components/ManagerShell";
+
+type BaseInfo = {
+  name?: { first?: string; last?: string };
+  contact?: { email?: string; phone?: string };
+  location?: { city?: string; country?: string };
+  workAuth?: { authorized?: boolean; needsSponsorship?: boolean };
+  links?: Record<string, string>;
+  defaultAnswers?: Record<string, string>;
+};
 
 type Profile = {
   id: string;
   displayName: string;
-  baseInfo?: {
-    location?: { city?: string; country?: string };
-    contact?: { email?: string; phone?: string };
-  };
-  updatedAt?: string;
+  baseInfo: BaseInfo;
+  createdAt: string;
+  updatedAt: string;
 };
 
-type Assignment = {
+type Resume = {
   id: string;
   profileId: string;
-  bidderUserId: string;
-  assignedAt: string;
-  unassignedAt?: string | null;
+  label: string;
+  createdAt: string;
 };
 
 export default function ManagerProfilesPage() {
   const router = useRouter();
   const { user, token, loading } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [users, setUsers] = useState<ClientUser[]>([]);
-  const [error, setError] = useState("");
+  const [selectedId, setSelectedId] = useState<string>("");
+  const [resumes, setResumes] = useState<Resume[]>([]);
+  const [draftBase, setDraftBase] = useState<BaseInfo>({});
+  const [newResumeLabel, setNewResumeLabel] = useState("");
+  const [newResumeFile, setNewResumeFile] = useState<File | null>(null);
+  const [showResumeModal, setShowResumeModal] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [showModal, setShowModal] = useState(false);
-  const [displayName, setDisplayName] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [email, setEmail] = useState("");
+  const [savingResumeId, setSavingResumeId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(false);
+
+  const selectedProfile = useMemo(
+    () => profiles.find((p) => p.id === selectedId),
+    [profiles, selectedId],
+  );
 
   useEffect(() => {
     if (loading) return;
@@ -48,201 +60,469 @@ export default function ManagerProfilesPage() {
       router.replace("/workspace");
       return;
     }
-    void loadData(token, user.id);
+    void loadProfiles(token);
   }, [loading, user, token, router]);
 
-  async function loadData(authToken: string, actorId: string) {
+  useEffect(() => {
+    if (!selectedProfile || !token) return;
+    setDraftBase(cleanBaseInfo(selectedProfile.baseInfo));
+    void loadResumes(selectedProfile.id, token);
+    setEditing(false);
+  }, [selectedProfile, token]);
+
+  async function loadProfiles(authToken: string) {
     try {
-      const [profRes, assignRes, usersRes] = await Promise.all([
-        api<Profile[]>(`/profiles?userId=${actorId}`, undefined, authToken),
-        api<Assignment[]>("/assignments", undefined, authToken),
-        api<ClientUser[]>("/users", undefined, authToken),
-      ]);
-      setProfiles(profRes);
-      setAssignments(assignRes);
-      setUsers(usersRes);
+      const list = await api<Profile[]>("/profiles", undefined, authToken);
+      setProfiles(list);
+      setSelectedId("");
+      setDetailOpen(false);
     } catch (err) {
       console.error(err);
       setError("Failed to load profiles.");
     }
   }
 
-  async function handleCreateProfile() {
-    if (!token) return;
+  async function loadResumes(profileId: string, authToken: string) {
+    try {
+      const list = await api<Resume[]>(`/profiles/${profileId}/resumes`, undefined, authToken);
+      setResumes(list);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load resumes.");
+    }
+  }
+
+  async function handleSaveProfile() {
+    if (!selectedProfile || !token) return;
     setSaving(true);
     setError("");
     try {
-      await api(
-        "/profiles",
+      const updated = await api<Profile>(
+        `/profiles/${selectedProfile.id}`,
         {
-          method: "POST",
+          method: "PATCH",
           body: JSON.stringify({
-            displayName,
-            firstName,
-            lastName,
-            email,
+            displayName: selectedProfile.displayName,
+            baseInfo: draftBase,
           }),
         },
-        token
+        token,
       );
-      setDisplayName("");
-      setFirstName("");
-      setLastName("");
-      setEmail("");
-      if (user) {
-        await loadData(token, user.id);
-      }
-      setShowModal(false);
+      setProfiles((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      setEditing(false);
     } catch (err) {
       console.error(err);
-      setError("Failed to create profile.");
+      setError("Could not save profile.");
     } finally {
       setSaving(false);
     }
   }
 
-  const activeAssignments = useMemo(() => {
-    const map = new Map<string, Assignment>();
-    assignments
-      .filter((a) => !a.unassignedAt)
-      .forEach((a) => map.set(a.profileId, a as Assignment & { unassignedAt?: string | null }));
-    return map;
-  }, [assignments]);
+  async function handleAddResume() {
+    if (!selectedProfile || !token || !newResumeLabel.trim()) return;
+    setSavingResumeId("new");
+    setError("");
+    try {
+      let fileData: string | undefined;
+      let fileName: string | undefined;
+      if (newResumeFile) {
+        fileName = newResumeFile.name;
+        fileData = await readFileAsBase64(newResumeFile);
+      }
+      const created = await api<Resume>(
+        `/profiles/${selectedProfile.id}/resumes`,
+        {
+          method: "POST",
+          body: JSON.stringify({ label: newResumeLabel.trim(), fileData, fileName }),
+        },
+        token,
+      );
+      setResumes((prev) => [created, ...prev]);
+      setNewResumeLabel("");
+      setNewResumeFile(null);
+      setShowResumeModal(false);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to add resume.");
+    } finally {
+      setSavingResumeId(null);
+    }
+  }
 
-  const userById = useMemo(() => {
-    const map = new Map<string, ClientUser>();
-    users.forEach((u) => map.set(u.id, u));
-    return map;
-  }, [users]);
+  async function handleRemoveResume(resumeId: string) {
+    if (!selectedProfile || !token) return;
+    setSavingResumeId(resumeId);
+    setError("");
+    try {
+      await api(`/profiles/${selectedProfile.id}/resumes/${resumeId}`, { method: "DELETE" }, token);
+      setResumes((prev) => prev.filter((r) => r.id !== resumeId));
+    } catch (err) {
+      console.error(err);
+      setError("Failed to remove resume.");
+    } finally {
+      setSavingResumeId(null);
+    }
+  }
+
+  const draft = cleanBaseInfo(draftBase);
 
   return (
     <ManagerShell>
-      <div className="space-y-6">
-        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+      <div className="grid gap-6 lg:grid-cols-[280px,1fr]">
+        <aside className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Profiles</div>
           <div className="space-y-2">
-            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">Manager</p>
-            <h1 className="text-3xl font-semibold text-slate-900">Profiles overview</h1>
-            <p className="text-sm text-slate-600">
-              Review bidder assignments and profile coverage. Observers cannot view this area.
-            </p>
-          </div>
-          <div className="flex justify-end">
-            <button
-              onClick={() => setShowModal(true)}
-              className="rounded-full bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] shadow-[0_14px_40px_-24px_rgba(74,222,128,0.9)] hover:brightness-110"
-            >
-              Add profile
-            </button>
-          </div>
-        </div>
-
-        {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
-
-        <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-5 bg-slate-50 px-4 py-3 text-xs uppercase tracking-[0.14em] text-slate-500">
-            <div>Name</div>
-            <div>Location</div>
-            <div>Contact</div>
-            <div>Assigned bidder</div>
-            <div>Updated</div>
-          </div>
-          <div className="divide-y divide-slate-200">
             {profiles.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-slate-500">No profiles found.</div>
+              <div className="text-sm text-slate-600">No profiles available.</div>
             ) : (
-              profiles.map((p) => {
-                const assignment = activeAssignments.get(p.id);
-                const bidder = assignment ? userById.get(assignment.bidderUserId) : null;
-                const location =
-                  p.baseInfo?.location?.city || p.baseInfo?.location?.country
-                    ? `${p.baseInfo?.location?.city ?? ""}${p.baseInfo?.location?.city ? ", " : ""}${p.baseInfo?.location?.country ?? ""}`
-                    : "—";
-                return (
-                  <div key={p.id} className="grid grid-cols-5 items-center px-4 py-3 text-sm text-slate-900">
-                    <div className="font-semibold">{p.displayName}</div>
-                    <div className="text-slate-600">{location}</div>
-                    <div className="text-slate-700">
-                      {p.baseInfo?.contact?.email ?? "—"}
-                      {p.baseInfo?.contact?.phone ? (
-                        <span className="ml-1 text-xs text-slate-500">· {p.baseInfo.contact.phone}</span>
-                      ) : null}
-                    </div>
-                    <div className="text-slate-700">
-                      {bidder ? `${bidder.name} (${bidder.email})` : "Unassigned"}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      {p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : "—"}
-                    </div>
+              profiles.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => {
+                    setSelectedId(p.id);
+                    setDetailOpen(true);
+                  }}
+                  className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                    selectedId === p.id
+                      ? "bg-slate-100 text-slate-900 border border-slate-200"
+                      : "text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="font-semibold">{p.displayName}</div>
+                  <div className="text-xs text-slate-500">
+                    Updated {new Date(p.updatedAt).toLocaleDateString()}
                   </div>
-                );
-              })
+                </button>
+              ))
             )}
           </div>
-        </div>
-      </div>
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl text-slate-900">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Create profile</p>
-                <p className="text-sm text-slate-700">Add a candidate profile to assign to bidders.</p>
+        </aside>
+
+        <section className="space-y-6">
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          {showResumeModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+              <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl text-slate-900">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Add resume</p>
+                    <p className="text-sm text-slate-600">Upload a resume file and label it.</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (savingResumeId === "new") return;
+                      setShowResumeModal(false);
+                      setNewResumeLabel("");
+                      setNewResumeFile(null);
+                    }}
+                    className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="mt-4 space-y-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-xs uppercase tracking-[0.18em] text-slate-600">Label</span>
+                    <input
+                      value={newResumeLabel}
+                      onChange={(e) => setNewResumeLabel(e.target.value)}
+                      placeholder="e.g. Backend resume"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300"
+                    />
+                  </label>
+                  <div className="space-y-2">
+                    <span className="text-xs uppercase tracking-[0.18em] text-slate-600">File</span>
+                    <label className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-700 hover:border-slate-400 hover:bg-slate-100 transition cursor-pointer">
+                      <span className="text-sm font-semibold">
+                        {newResumeFile ? "Replace resume file" : "Click to choose or drop file"}
+                      </span>
+                      <span className="text-xs text-slate-500">PDF, DOC, DOCX, or TXT up to ~5MB</span>
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,.txt"
+                        onChange={(e) => setNewResumeFile(e.target.files?.[0] ?? null)}
+                        className="hidden"
+                      />
+                      {newResumeFile && (
+                        <div className="rounded-full bg-white px-3 py-1 text-xs text-slate-800 border border-slate-200">
+                          {newResumeFile.name} ({Math.max(1, Math.round(newResumeFile.size / 1024))} KB)
+                        </div>
+                      )}
+                    </label>
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    onClick={() => {
+                      if (savingResumeId === "new") return;
+                      setShowResumeModal(false);
+                      setNewResumeLabel("");
+                      setNewResumeFile(null);
+                    }}
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-800 hover:bg-slate-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleAddResume}
+                    disabled={savingResumeId === "new" || !newResumeLabel.trim()}
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {savingResumeId === "new" ? "Uploading..." : "Save resume"}
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={() => setShowModal(false)}
-                className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
-              >
-                Close
-              </button>
             </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <input
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Display name"
-                className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-slate-200"
-              />
-              <input
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Email (optional)"
-                className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-slate-200"
-              />
-              <input
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                placeholder="First name (optional)"
-                className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-slate-200"
-              />
-              <input
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                placeholder="Last name (optional)"
-                className="rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-slate-200"
-              />
-            </div>
-            <div className="mt-4 flex gap-2">
-              <button
-                onClick={handleCreateProfile}
-                disabled={saving || !displayName}
-                className="rounded-xl bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {saving ? "Creating..." : "Save profile"}
-              </button>
-              <button
-                onClick={() => setShowModal(false)}
-                className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-800 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-            </div>
+          )}
+          <div
+            className={`fixed top-0 right-0 z-40 h-full w-full max-w-2xl transform border-l border-slate-200 bg-white shadow-2xl transition-transform duration-300 ${
+              detailOpen ? "translate-x-0" : "translate-x-full"
+            }`}
+          >
+            {selectedProfile ? (
+              <div className="flex h-full flex-col overflow-y-auto p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">Profile</p>
+                    <h1 className="text-2xl font-semibold text-slate-900">
+                      {selectedProfile.displayName}
+                    </h1>
+                    <p className="text-sm text-slate-600">
+                      Manage core details and contact information.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {editing ? (
+                      <>
+                        <button
+                          onClick={handleSaveProfile}
+                          disabled={saving}
+                          className="rounded-xl bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {saving ? "Saving..." : "Save profile"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setDraftBase(cleanBaseInfo(selectedProfile.baseInfo));
+                            setNewResumeLabel("");
+                            setEditing(false);
+                          }}
+                          className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-800 hover:bg-slate-100"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => setEditing(true)}
+                        className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-800 hover:bg-slate-100"
+                      >
+                        Edit details
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-6 grid gap-3 md:grid-cols-2">
+                  {editing ? (
+                    <>
+                      <LabeledInput
+                        label="First name"
+                        value={draft.name?.first ?? ""}
+                        onChange={(v) => updateBase("name.first", v)}
+                      />
+                      <LabeledInput
+                        label="Last name"
+                        value={draft.name?.last ?? ""}
+                        onChange={(v) => updateBase("name.last", v)}
+                      />
+                      <LabeledInput
+                        label="Email"
+                        value={draft.contact?.email ?? ""}
+                        onChange={(v) => updateBase("contact.email", v)}
+                      />
+                      <LabeledInput
+                        label="Phone"
+                        value={draft.contact?.phone ?? ""}
+                        onChange={(v) => updateBase("contact.phone", v)}
+                      />
+                      <LabeledInput
+                        label="City"
+                        value={draft.location?.city ?? ""}
+                        onChange={(v) => updateBase("location.city", v)}
+                      />
+                      <LabeledInput
+                        label="Country"
+                        value={draft.location?.country ?? ""}
+                        onChange={(v) => updateBase("location.country", v)}
+                      />
+                      <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(draft.workAuth?.authorized)}
+                          onChange={(e) => updateBase("workAuth.authorized", e.target.checked)}
+                          className="h-4 w-4 rounded border-slate-300 text-[#0b1224]"
+                        />
+                        Authorized to work
+                      </label>
+                    </>
+                  ) : (
+                    <>
+                      <ReadRow label="First name" value={draft.name?.first ?? "—"} />
+                      <ReadRow label="Last name" value={draft.name?.last ?? "—"} />
+                      <ReadRow label="Email" value={draft.contact?.email ?? "—"} />
+                      <ReadRow label="Phone" value={draft.contact?.phone ?? "—"} />
+                      <ReadRow label="City" value={draft.location?.city ?? "—"} />
+                      <ReadRow label="Country" value={draft.location?.country ?? "—"} />
+                      <ReadRow
+                        label="Authorized to work"
+                        value={draft.workAuth?.authorized ? "Yes" : "No"}
+                      />
+                    </>
+                  )}
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                        Resumes
+                      </p>
+                      <p className="text-sm text-slate-600">Add or remove profile resumes.</p>
+                    </div>
+                    <button
+                      onClick={() => setShowResumeModal(true)}
+                      className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110"
+                    >
+                      Add resume
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {resumes.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-600">
+                        No resumes yet.
+                      </div>
+                    ) : (
+                      resumes.map((r) => (
+                        <div
+                          key={r.id}
+                          className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-800"
+                        >
+                          <div>
+                            <div className="font-semibold text-slate-900">{r.label}</div>
+                            <div className="text-xs text-slate-500">
+                              Added {new Date(r.createdAt).toLocaleDateString()}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveResume(r.id)}
+                            disabled={savingResumeId === r.id}
+                            className="text-xs text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {savingResumeId === r.id ? "Removing..." : "Remove"}
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
-        </div>
-      )}
+
+          {detailOpen && (
+            <div
+              className="fixed inset-0 z-30 bg-black/30"
+              onClick={() => {
+                setDetailOpen(false);
+                setEditing(false);
+              }}
+            />
+          )}
+        </section>
+      </div>
     </ManagerShell>
   );
+
+  function updateBase(path: string, value: string | boolean) {
+    setDraftBase((prev) => {
+      const next = cleanBaseInfo(prev);
+      if (path.startsWith("name.")) {
+        const key = path.split(".")[1];
+        next.name = { ...(next.name ?? {}), [key]: value as string };
+      } else if (path.startsWith("contact.")) {
+        const key = path.split(".")[1];
+        next.contact = { ...(next.contact ?? {}), [key]: value as string };
+      } else if (path.startsWith("location.")) {
+        const key = path.split(".")[1];
+        next.location = { ...(next.location ?? {}), [key]: value as string };
+      } else if (path === "workAuth.authorized") {
+        next.workAuth = { ...(next.workAuth ?? {}), authorized: Boolean(value) };
+      }
+      return next;
+    });
+  }
+}
+
+function cleanBaseInfo(base: BaseInfo): BaseInfo {
+  return {
+    name: { first: base?.name?.first ?? "", last: base?.name?.last ?? "" },
+    contact: { email: base?.contact?.email ?? "", phone: base?.contact?.phone ?? "" },
+    location: { city: base?.location?.city ?? "", country: base?.location?.country ?? "" },
+    workAuth: { authorized: base?.workAuth?.authorized ?? false, needsSponsorship: base?.workAuth?.needsSponsorship ?? false },
+    links: base?.links ?? {},
+    defaultAnswers: base?.defaultAnswers ?? {},
+  };
+}
+
+function LabeledInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="space-y-1">
+      <span className="text-xs uppercase tracking-[0.18em] text-slate-600">{label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300"
+      />
+    </label>
+  );
+}
+
+function ReadRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
+      <div className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</div>
+      <div className="mt-1 text-slate-900">{value || "—"}</div>
+    </div>
+  );
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === "string") {
+        const [, data] = result.split(",");
+        resolve(data ?? "");
+      } else {
+        reject(new Error("Unable to read file"));
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }

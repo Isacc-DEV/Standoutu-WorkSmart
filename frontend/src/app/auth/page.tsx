@@ -52,10 +52,10 @@ export default function AuthPage() {
           </p>
         </div>
 
-        <div className="mt-5 inline-flex rounded-full bg-white/5 p-1 text-xs text-slate-200">
+        <div className="mt-5 inline-flex rounded-full border border-slate-200 bg-slate-50 p-1 text-xs text-slate-700">
           <button
             onClick={() => setMode("signin")}
-            className={`rounded-full px-4 py-1 ${
+            className={`rounded-full px-4 py-1 transition ${
               mode === "signin" ? "bg-[#5ef3c5] text-[#0b1224] font-semibold" : ""
             }`}
           >
@@ -63,8 +63,10 @@ export default function AuthPage() {
           </button>
           <button
             onClick={() => setMode("signup")}
-            className={`rounded-full px-4 py-1 ${
-              mode === "signup" ? "bg-[#5ef3c5] text-[#0b1224] font-semibold" : ""
+            className={`rounded-full px-4 py-1 transition ${
+              mode === "signup"
+                ? "bg-[#5ef3c5] text-[#0b1224] font-semibold"
+                : "text-slate-700 hover:text-slate-900"
             }`}
           >
             Sign up

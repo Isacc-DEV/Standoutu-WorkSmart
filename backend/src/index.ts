@@ -6,10 +6,23 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { chromium, Browser, Page } from 'playwright';
 import bcrypt from 'bcryptjs';
-import { assignments, events, llmSettings, profiles, resumes, sessions } from './data';
-import { ApplicationSession, BaseInfo, SessionStatus, User, UserRole } from './types';
+import { assignments, events, llmSettings, profiles, resumes, sessions, profileResumes } from './data';
+import { ApplicationSession, BaseInfo, ProfileResume, SessionStatus, User, UserRole } from './types';
 import { authGuard, forbidObserver, signToken } from './auth';
-import { findUserByEmail, findUserById, initDb, insertProfile, insertUser, listBidderSummaries, pool } from './db';
+import {
+  deleteResumeById,
+  deleteProfileResume,
+  findUserByEmail,
+  findUserById,
+  initDb,
+  insertProfile,
+  insertResumeRecord,
+  insertProfileResumeRecord,
+  insertUser,
+  listBidderSummaries,
+  pool,
+  updateProfileRecord,
+} from './db';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
 const app = fastify({ logger: true });
@@ -113,12 +126,111 @@ async function bootstrap() {
     return profile;
   });
 
+  app.patch('/profiles/:id', async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== 'MANAGER' && actor.role !== 'ADMIN')) {
+      return reply.status(403).send({ message: 'Only managers or admins can update profiles' });
+    }
+    const { id } = request.params as { id: string };
+    const profile = profiles.find((p) => p.id === id);
+    if (!profile) return reply.status(404).send({ message: 'Profile not found' });
+
+    const schema = z.object({
+      displayName: z.string().min(2).optional(),
+      baseInfo: z.record(z.any()).optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+
+    const incomingBase = (body.baseInfo ?? {}) as any;
+    const mergedBase = {
+      ...profile.baseInfo,
+      ...(incomingBase || {}),
+      name: { ...(profile.baseInfo?.name ?? {}), ...(incomingBase?.name ?? {}) },
+      contact: { ...(profile.baseInfo?.contact ?? {}), ...(incomingBase?.contact ?? {}) },
+      location: { ...(profile.baseInfo?.location ?? {}), ...(incomingBase?.location ?? {}) },
+      workAuth: { ...(profile.baseInfo?.workAuth ?? {}), ...(incomingBase?.workAuth ?? {}) },
+      links: { ...(profile.baseInfo?.links ?? {}), ...(incomingBase?.links ?? {}) },
+      defaultAnswers: {
+        ...(profile.baseInfo?.defaultAnswers ?? {}),
+        ...(incomingBase?.defaultAnswers ?? {}),
+      },
+    };
+
+    profile.displayName = body.displayName ?? profile.displayName;
+    profile.baseInfo = mergedBase;
+    profile.updatedAt = new Date().toISOString();
+
+    await updateProfileRecord(profile);
+    return profile;
+  });
+
   app.get('/profiles/:id/resumes', async (request, reply) => {
     if (forbidObserver(reply, request.authUser)) return;
     const { id } = request.params as { id: string };
     const profile = profiles.find((p) => p.id === id);
     if (!profile) return reply.status(404).send({ message: 'Profile not found' });
-    return resumes.filter((r) => r.profileId === id);
+    const resumeIds = profileResumes.filter((pr) => pr.profileId === id).map((pr) => pr.resumeId);
+    return resumes.filter((r) => resumeIds.includes(r.id));
+  });
+
+  app.post('/profiles/:id/resumes', async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== 'MANAGER' && actor.role !== 'ADMIN')) {
+      return reply.status(403).send({ message: 'Only managers or admins can add resumes' });
+    }
+    const { id } = request.params as { id: string };
+    const profile = profiles.find((p) => p.id === id);
+    if (!profile) return reply.status(404).send({ message: 'Profile not found' });
+
+    const schema = z.object({
+      label: z.string().min(2),
+      filePath: z.string().optional(),
+      fileData: z.string().optional(),
+      fileName: z.string().optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+    const resume = {
+      id: randomUUID(),
+      label: body.label,
+      filePath: body.fileName ?? body.filePath ?? '',
+      resumeText: body.fileData ?? '',
+      resumeJson: {},
+      createdAt: new Date().toISOString(),
+    };
+    resumes.unshift(resume);
+    await insertResumeRecord(resume);
+    const link: ProfileResume = {
+      id: randomUUID(),
+      profileId: id,
+      resumeId: resume.id,
+      createdAt: new Date().toISOString(),
+    };
+    profileResumes.unshift(link);
+    await insertProfileResumeRecord(link);
+    return resume;
+  });
+
+  app.delete('/profiles/:profileId/resumes/:resumeId', async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== 'MANAGER' && actor.role !== 'ADMIN')) {
+      return reply.status(403).send({ message: 'Only managers or admins can remove resumes' });
+    }
+    const { profileId, resumeId } = request.params as { profileId: string; resumeId: string };
+    const profile = profiles.find((p) => p.id === profileId);
+    if (!profile) return reply.status(404).send({ message: 'Profile not found' });
+    const linkIdx = profileResumes.findIndex(
+      (pr) => pr.profileId === profileId && pr.resumeId === resumeId,
+    );
+    if (linkIdx === -1) return reply.status(404).send({ message: 'Resume not found' });
+    profileResumes.splice(linkIdx, 1);
+    const idx = resumes.findIndex((r) => r.id === resumeId);
+    if (idx !== -1) resumes.splice(idx, 1);
+    await deleteProfileResume(profileId, resumeId);
+    await deleteResumeById(resumeId);
+    return { ok: true };
   });
 
   app.get('/assignments', async (request, reply) => {

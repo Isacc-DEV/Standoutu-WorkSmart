@@ -5,9 +5,10 @@ import {
   llmSettings,
   profiles,
   resumes,
+  profileResumes,
   users as seedUsers,
 } from './data';
-import { User } from './types';
+import { ProfileResume, Resume, User } from './types';
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -38,11 +39,17 @@ export async function initDb() {
 
       CREATE TABLE IF NOT EXISTS resumes (
         id UUID PRIMARY KEY,
-        profile_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
         label TEXT NOT NULL,
         file_path TEXT,
         resume_text TEXT,
         resume_json JSONB,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS profile_resumes (
+        id UUID PRIMARY KEY,
+        profile_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
+        resume_id UUID REFERENCES resumes(id) ON DELETE CASCADE,
         created_at TIMESTAMP DEFAULT NOW()
       );
 
@@ -117,11 +124,22 @@ export async function initDb() {
     for (const r of resumes) {
       await client.query(
         `
-          INSERT INTO resumes (id, profile_id, label, file_path, resume_text, resume_json, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          INSERT INTO resumes (id, label, file_path, resume_text, resume_json, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
           ON CONFLICT (id) DO NOTHING;
         `,
-        [r.id, r.profileId, r.label, r.filePath, r.resumeText, JSON.stringify(r.resumeJson ?? {}), r.createdAt],
+        [r.id, r.label, r.filePath, r.resumeText, JSON.stringify(r.resumeJson ?? {}), r.createdAt],
+      );
+    }
+
+    for (const pr of profileResumes) {
+      await client.query(
+        `
+          INSERT INTO profile_resumes (id, profile_id, resume_id, created_at)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (id) DO NOTHING;
+        `,
+        [pr.id, pr.profileId, pr.resumeId, pr.createdAt],
       );
     }
 
@@ -201,6 +219,63 @@ export async function insertProfile(profile: {
       profile.updatedAt ?? new Date().toISOString(),
     ],
   );
+}
+
+export async function updateProfileRecord(profile: {
+  id: string;
+  displayName: string;
+  baseInfo: Record<string, unknown>;
+}) {
+  await pool.query(
+    `
+      UPDATE profiles
+      SET display_name = $2,
+          base_info = $3,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [profile.id, profile.displayName, JSON.stringify(profile.baseInfo ?? {})],
+  );
+}
+
+export async function insertResumeRecord(resume: Resume) {
+  await pool.query(
+    `
+      INSERT INTO resumes (id, label, file_path, resume_text, resume_json, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (id) DO NOTHING
+    `,
+    [
+      resume.id,
+      resume.label,
+      resume.filePath,
+      resume.resumeText ?? null,
+      JSON.stringify(resume.resumeJson ?? {}),
+      resume.createdAt,
+    ],
+  );
+}
+
+export async function insertProfileResumeRecord(record: ProfileResume) {
+  await pool.query(
+    `
+      INSERT INTO profile_resumes (id, profile_id, resume_id, created_at)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (id) DO NOTHING
+    `,
+    [record.id, record.profileId, record.resumeId, record.createdAt],
+  );
+}
+
+export async function deleteProfileResume(profileId: string, resumeId: string) {
+  await pool.query('DELETE FROM profile_resumes WHERE profile_id = $1 AND resume_id = $2', [
+    profileId,
+    resumeId,
+  ]);
+}
+
+export async function deleteResumeById(resumeId: string) {
+  await pool.query('DELETE FROM resumes WHERE id = $1', [resumeId]);
 }
 
 export type BidderSummary = {
