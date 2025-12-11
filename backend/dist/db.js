@@ -145,5 +145,5 @@ async function insertUser(user) {
       INSERT INTO users (id, email, name, role, password, is_active)
       VALUES ($1, $2, $3, $4, $5, $6)
       ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, role = EXCLUDED.role, password = EXCLUDED.password, is_active = EXCLUDED.is_active
-    `, [user.id, user.email, user.name, user.role, user.password ?? 'demo', user.isActive ?? true]);
+    `, [user.id, user.email, user.name, user.role, user.password ?? 'demo', user.isActive ?? false]);
 }
