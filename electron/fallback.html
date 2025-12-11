@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SmartWork Desktop Shell</title>
+  <style>
+    :root {
+      --bg: #050915;
+      --panel: #0b1224;
+      --panel-2: #0f182f;
+      --border: rgba(255, 255, 255, 0.06);
+      --text: #e9eef7;
+      --muted: #8da0c2;
+      --accent: #5ef3c5;
+      --accent-2: #3cc7f7;
+      --warn: #f8c77e;
+      --error: #f17b7b;
+      --success: #5ef3c5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 20% 20%, rgba(94, 243, 197, 0.06), transparent 25%),
+                  radial-gradient(circle at 80% 0%, rgba(60, 199, 247, 0.06), transparent 22%),
+                  var(--bg);
+      color: var(--text);
+    }
+    a { color: var(--accent-2); }
+    .app {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 28px 22px 48px;
+    }
+    .hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .eyebrow {
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    h1 {
+      margin: 6px 0 8px;
+      font-size: 26px;
+    }
+    .subhead { color: var(--muted); margin: 0; max-width: 720px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: #0f182f;
+      color: var(--text);
+      font-size: 12px;
+      border: 1px solid var(--border);
+    }
+    .pill.warn { background: rgba(248, 199, 126, 0.14); color: #f8c77e; border-color: rgba(248, 199, 126, 0.25); }
+    .pill.good { background: rgba(94, 243, 197, 0.12); color: var(--accent); border-color: rgba(94, 243, 197, 0.2); }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 18px;
+      padding: 14px 16px;
+      box-shadow: 0 18px 60px -52px black;
+    }
+    .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--muted);
+    }
+    .value { margin-top: 6px; font-size: 17px; font-weight: 700; color: var(--text); word-break: break-word; }
+    .helper { margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .panel {
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      border-radius: 18px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 25px 70px -60px black;
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .panel-title { font-size: 17px; font-weight: 700; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 10px;
+    }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    input, select {
+      width: 100%;
+      background: #0b1224;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: rgba(94, 243, 197, 0.45); box-shadow: 0 0 0 3px rgba(94, 243, 197, 0.12); }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    button {
+      border: none;
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #041522;
+      box-shadow: 0 14px 36px -20px rgba(94, 243, 197, 0.7);
+      transition: transform 80ms ease, filter 120ms ease;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.02); }
+    .ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      box-shadow: none;
+    }
+    .ghost:hover:not(:disabled) { border-color: rgba(94, 243, 197, 0.45); color: var(--accent); }
+    .two-col {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .list {
+      display: grid;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .item {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(255, 255, 255, 0.02);
+      font-size: 13px;
+    }
+    .stream-box {
+      border: 1px dashed rgba(255, 255, 255, 0.12);
+      background: #070c18;
+      border-radius: 14px;
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+    .stream-box img {
+      width: 100%;
+      display: block;
+      object-fit: cover;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 14px;
+    }
+    .log {
+      background: #050915;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      font-family: "Consolas", monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .badge-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .small { font-size: 12px; color: var(--muted); }
+    .status-success { color: var(--success); }
+    .status-warn { color: var(--warn); }
+    .status-error { color: var(--error); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="hero">
+      <div>
+        <div class="eyebrow">SmartWork Desktop</div>
+        <h1>Standalone shell (no frontend server)</h1>
+        <p class="subhead">
+          You are seeing this fallback UI because the Next.js frontend was not reachable.
+          Connect directly to the backend, start sessions, and watch the streamed frames.
+        </p>
+      </div>
+      <div class="badge-row">
+        <span id="fallback-reason" class="pill warn">Fallback active</span>
+        <span class="pill">Backend only mode</span>
+      </div>
+    </div>
+
+    <div class="status-grid">
+      <div class="card">
+        <div class="label">Backend</div>
+        <div id="backend-status" class="value status-warn">Checking…</div>
+        <div class="helper">API base: <span id="api-base-label"></span></div>
+      </div>
+      <div class="card">
+        <div class="label">User</div>
+        <div id="user-email" class="value">Not logged in</div>
+        <div id="user-role" class="helper"></div>
+      </div>
+      <div class="card">
+        <div class="label">Session</div>
+        <div id="session-status" class="value">None</div>
+        <div id="session-url" class="helper"></div>
+      </div>
+      <div class="card">
+        <div class="label">Stream</div>
+        <div id="stream-status" class="value">Disconnected</div>
+        <div class="helper">Frames: <span id="frame-count">0</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="label">Backend</div>
+          <div class="panel-title">Connection + session</div>
+        </div>
+        <button id="reconnect" class="ghost">Reconnect</button>
+      </div>
+      <div class="fields">
+        <div class="field">
+          <label class="label">API base</label>
+          <input id="api-base-input" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label class="label">Job URL</label>
+          <input id="job-url" value="https://jobs.example.com" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label class="label">Profile</label>
+          <select id="profile-select"></select>
+        </div>
+        <div class="field">
+          <label class="label">Resume</label>
+          <select id="resume-select"></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="start-session">Start session</button>
+        <button id="analyze" class="ghost" disabled>Analyze</button>
+        <button id="autofill" class="ghost" disabled>Autofill</button>
+      </div>
+      <p class="small">
+        This shell auto-logins the demo bidder (bidder@smartwork.local) and talks directly to the API.
+        Use `API_BASE` env var when launching Electron to point elsewhere.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="label">Stream</div>
+          <div class="panel-title">Remote browser frames</div>
+        </div>
+        <div class="muted">Requires backend Playwright session</div>
+      </div>
+      <div class="stream-box" id="stream-box">
+        <div class="hint" id="stream-hint">Start a session to see frames.</div>
+        <img id="frame-image" alt="Live frame" style="display:none;" />
+      </div>
+      <div class="actions">
+        <button id="start-stream" disabled>Start stream</button>
+        <button id="stop-stream" class="ghost" disabled>Stop stream</button>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <div class="label">Metrics</div>
+            <div class="panel-title">Recent activity</div>
+          </div>
+          <button id="refresh-metrics" class="ghost">Refresh</button>
+        </div>
+        <div class="list" id="metrics-list">
+          <div class="muted">No metrics yet.</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <div class="label">Fill plan</div>
+            <div class="panel-title">Autofill result</div>
+          </div>
+        </div>
+        <div class="list" id="fill-plan">
+          <div class="muted">Run autofill to see results.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="label">Log</div>
+          <div class="panel-title">Actions + errors</div>
+        </div>
+        <button id="clear-log" class="ghost">Clear</button>
+      </div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const fallbackReason = params.get('reason') || 'frontend not reachable';
+      let apiBase = params.get('apiBase') || 'http://localhost:4000';
+
+      const state = {
+        user: null,
+        profiles: [],
+        resumes: [],
+        session: null,
+        ws: null,
+        frames: 0,
+      };
+
+      const dom = {
+        apiBaseInput: document.getElementById('api-base-input'),
+        apiBaseLabel: document.getElementById('api-base-label'),
+        backendStatus: document.getElementById('backend-status'),
+        userEmail: document.getElementById('user-email'),
+        userRole: document.getElementById('user-role'),
+        profileSelect: document.getElementById('profile-select'),
+        resumeSelect: document.getElementById('resume-select'),
+        sessionStatus: document.getElementById('session-status'),
+        sessionUrl: document.getElementById('session-url'),
+        jobUrl: document.getElementById('job-url'),
+        log: document.getElementById('log'),
+        frameImage: document.getElementById('frame-image'),
+        frameCount: document.getElementById('frame-count'),
+        streamStatus: document.getElementById('stream-status'),
+        streamHint: document.getElementById('stream-hint'),
+        streamBox: document.getElementById('stream-box'),
+        startStream: document.getElementById('start-stream'),
+        stopStream: document.getElementById('stop-stream'),
+        startSession: document.getElementById('start-session'),
+        analyze: document.getElementById('analyze'),
+        autofill: document.getElementById('autofill'),
+        metricsList: document.getElementById('metrics-list'),
+        fillPlan: document.getElementById('fill-plan'),
+        fallbackReason: document.getElementById('fallback-reason'),
+      };
+
+      dom.fallbackReason.textContent = `Fallback active: ${fallbackReason}`;
+      dom.apiBaseInput.value = apiBase;
+      dom.apiBaseLabel.textContent = apiBase;
+
+      function setStatus(el, text, tone) {
+        el.textContent = text;
+        el.classList.remove('status-success', 'status-error', 'status-warn');
+        if (tone) el.classList.add(tone);
+      }
+
+      function log(message, tone = 'info') {
+        const time = new Date().toLocaleTimeString();
+        const color = tone === 'error' ? 'var(--error)' : tone === 'warn' ? 'var(--warn)' : 'var(--accent)';
+        const line = document.createElement('div');
+        line.style.color = color;
+        line.textContent = `[${time}] ${message}`;
+        dom.log.appendChild(line);
+        dom.log.scrollTop = dom.log.scrollHeight;
+      }
+
+      function api(path, init = {}) {
+        const url = `${apiBase}${path}`;
+        return fetch(url, {
+          ...init,
+          headers: {
+            'Content-Type': 'application/json',
+            ...(init.headers || {}),
+          },
+        }).then(async (res) => {
+          if (!res.ok) {
+            const txt = await res.text();
+            throw new Error(txt || res.statusText);
+          }
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) return res.json();
+          return res.text();
+        });
+      }
+
+      async function checkBackend() {
+        try {
+          await api('/health');
+          setStatus(dom.backendStatus, 'Healthy', 'status-success');
+          log('Backend reachable');
+          return true;
+        } catch (err) {
+          setStatus(dom.backendStatus, 'Unavailable', 'status-error');
+          log(`Backend not reachable: ${err.message}`, 'error');
+          return false;
+        }
+      }
+
+      async function login() {
+        try {
+          const result = await api('/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ email: 'bidder@smartwork.local', password: 'demo' }),
+          });
+          state.user = result.user;
+          dom.userEmail.textContent = result.user.email;
+          dom.userRole.textContent = `Role: ${result.user.role}`;
+          log('Logged in as demo bidder');
+        } catch (err) {
+          log(`Login failed: ${err.message}`, 'error');
+          dom.userEmail.textContent = 'Login failed';
+        }
+      }
+
+      async function loadProfiles() {
+        if (!state.user) return;
+        try {
+          const profiles = await api(`/profiles?userId=${state.user.id}`);
+          state.profiles = profiles;
+          dom.profileSelect.innerHTML = '';
+          profiles.forEach((p, idx) => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.displayName;
+            if (idx === 0) opt.selected = true;
+            dom.profileSelect.appendChild(opt);
+          });
+          if (profiles[0]) await loadResumes(profiles[0].id);
+          log(`Loaded ${profiles.length} profiles`);
+        } catch (err) {
+          log(`Could not load profiles: ${err.message}`, 'error');
+        }
+      }
+
+      async function loadResumes(profileId) {
+        try {
+          const resumes = await api(`/profiles/${profileId}/resumes`);
+          state.resumes = resumes;
+          dom.resumeSelect.innerHTML = '';
+          resumes.forEach((r, idx) => {
+            const opt = document.createElement('option');
+            opt.value = r.id;
+            opt.textContent = r.label;
+            if (idx === 0) opt.selected = true;
+            dom.resumeSelect.appendChild(opt);
+          });
+          log(`Loaded ${resumes.length} resumes`);
+        } catch (err) {
+          log(`Could not load resumes: ${err.message}`, 'error');
+        }
+      }
+
+      async function startSession() {
+        if (!state.user) {
+          log('Login is required before starting a session.', 'warn');
+          return;
+        }
+        const profileId = dom.profileSelect.value;
+        const resumeId = dom.resumeSelect.value;
+        const url = dom.jobUrl.value.trim();
+        if (!url) {
+          log('Provide a job URL first', 'warn');
+          return;
+        }
+        setStatus(dom.sessionStatus, 'Starting…', 'status-warn');
+        try {
+          const session = await api('/sessions', {
+            method: 'POST',
+            body: JSON.stringify({
+              bidderUserId: state.user.id,
+              profileId,
+              url,
+              selectedResumeId: resumeId,
+            }),
+          });
+          state.session = session;
+          dom.sessionUrl.textContent = session.url;
+          setStatus(dom.sessionStatus, `Session ${session.id.slice(0, 8)}`, 'status-success');
+          dom.analyze.disabled = false;
+          dom.autofill.disabled = false;
+          dom.startStream.disabled = false;
+          dom.stopStream.disabled = false;
+          await api(`/sessions/${session.id}/go`, { method: 'POST' }).catch(() => undefined);
+          log(`Session created for ${url}`);
+          await refreshMetrics();
+        } catch (err) {
+          setStatus(dom.sessionStatus, 'Failed', 'status-error');
+          log(`Session failed: ${err.message}`, 'error');
+        }
+      }
+
+      async function runAnalyze() {
+        if (!state.session) return;
+        dom.analyze.disabled = true;
+        try {
+          const res = await api(`/sessions/${state.session.id}/analyze`, { method: 'POST' });
+          log(`Analyze done. Recommended: ${res.recommendedResumeId || 'n/a'}`);
+          dom.sessionStatus.textContent = 'Analyzed';
+          dom.analyze.disabled = false;
+        } catch (err) {
+          log(`Analyze failed: ${err.message}`, 'error');
+          dom.analyze.disabled = false;
+        }
+      }
+
+      async function runAutofill() {
+        if (!state.session) return;
+        dom.autofill.disabled = true;
+        try {
+          const res = await api(`/sessions/${state.session.id}/autofill`, { method: 'POST' });
+          renderFillPlan(res.fillPlan);
+          dom.sessionStatus.textContent = 'Filled';
+          dom.autofill.disabled = false;
+          log('Autofill complete');
+        } catch (err) {
+          log(`Autofill failed: ${err.message}`, 'error');
+          dom.autofill.disabled = false;
+        }
+      }
+
+      function renderFillPlan(plan) {
+        dom.fillPlan.innerHTML = '';
+        if (!plan) {
+          dom.fillPlan.innerHTML = '<div class="muted">No fill plan yet.</div>';
+          return;
+        }
+        if (plan.filled?.length) {
+          const filled = document.createElement('div');
+          filled.className = 'item';
+          filled.innerHTML = `<strong>Filled</strong><br>${plan.filled
+            .map((f) => `${f.field}: ${f.value}`)
+            .join('<br>')}`;
+          dom.fillPlan.appendChild(filled);
+        }
+        if (plan.suggestions?.length) {
+          const sug = document.createElement('div');
+          sug.className = 'item';
+          sug.innerHTML = `<strong>Suggestions</strong><br>${plan.suggestions
+            .map((s) => `${s.field}: ${s.suggestion}`)
+            .join('<br>')}`;
+          dom.fillPlan.appendChild(sug);
+        }
+        if (plan.blocked?.length) {
+          const blocked = document.createElement('div');
+          blocked.className = 'item';
+          blocked.innerHTML = `<strong>Blocked</strong><br>${plan.blocked.join(', ')}`;
+          dom.fillPlan.appendChild(blocked);
+        }
+        if (!dom.fillPlan.children.length) {
+          dom.fillPlan.innerHTML = '<div class="muted">No fill data.</div>';
+        }
+      }
+
+      function startStream() {
+        if (!state.session) {
+          log('Start a session first', 'warn');
+          return;
+        }
+        if (state.ws) state.ws.close();
+        const wsBase = apiBase.replace(/^http/i, 'ws');
+        const ws = new WebSocket(`${wsBase}/ws/browser/${state.session.id}`);
+        state.frames = 0;
+        dom.frameCount.textContent = '0';
+        dom.streamHint.textContent = 'Connecting…';
+        dom.streamStatus.textContent = 'Connecting…';
+        ws.onopen = () => {
+          dom.streamHint.textContent = 'Waiting for frames…';
+          setStatus(dom.streamStatus, 'Live', 'status-success');
+        };
+        ws.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.type === 'frame') {
+              state.frames += 1;
+              dom.frameCount.textContent = String(state.frames);
+              dom.frameImage.src = `data:image/png;base64,${msg.data}`;
+              dom.frameImage.style.display = 'block';
+              dom.streamHint.style.display = 'none';
+            }
+            if (msg.type === 'error') {
+              log(`Stream error: ${msg.message}`, 'error');
+            }
+          } catch (err) {
+            log(`Stream parse failed: ${err.message}`, 'error');
+          }
+        };
+        ws.onerror = () => {
+          setStatus(dom.streamStatus, 'Stream error', 'status-error');
+        };
+        ws.onclose = () => {
+          setStatus(dom.streamStatus, 'Disconnected', 'status-warn');
+          dom.streamHint.textContent = 'Stream closed';
+        };
+        state.ws = ws;
+      }
+
+      function stopStream() {
+        if (state.ws) state.ws.close();
+        state.ws = null;
+        setStatus(dom.streamStatus, 'Disconnected', 'status-warn');
+        dom.streamHint.textContent = 'Stream stopped.';
+      }
+
+      async function refreshMetrics() {
+        if (!state.user) return;
+        try {
+          const m = await api(`/metrics/my?bidderUserId=${state.user.id}`);
+          renderMetrics(m);
+        } catch (err) {
+          log(`Metrics failed: ${err.message}`, 'error');
+        }
+      }
+
+      function renderMetrics(m) {
+        dom.metricsList.innerHTML = '';
+        const totals = document.createElement('div');
+        totals.className = 'item';
+        totals.innerHTML = `<strong>Tried:</strong> ${m.tried} | <strong>Submitted:</strong> ${m.submitted} | <strong>Applied %:</strong> ${m.appliedPercentage}%`;
+        dom.metricsList.appendChild(totals);
+        if (!m.recent?.length) {
+          dom.metricsList.innerHTML += '<div class="muted">No recent sessions.</div>';
+          return;
+        }
+        m.recent.forEach((s) => {
+          const div = document.createElement('div');
+          div.className = 'item';
+          div.innerHTML = `<div><strong>${s.url}</strong></div><div class="small">Status: ${s.status}</div>`;
+          dom.metricsList.appendChild(div);
+        });
+      }
+
+      async function bootstrap() {
+        const healthy = await checkBackend();
+        if (!healthy) return;
+        await login();
+        await loadProfiles();
+        await refreshMetrics();
+      }
+
+      document.getElementById('reconnect').addEventListener('click', async () => {
+        apiBase = dom.apiBaseInput.value.trim() || apiBase;
+        dom.apiBaseLabel.textContent = apiBase;
+        log(`API base set to ${apiBase}`);
+        await bootstrap();
+      });
+
+      dom.profileSelect.addEventListener('change', async (e) => {
+        await loadResumes(e.target.value);
+      });
+      dom.startSession.addEventListener('click', startSession);
+      dom.analyze.addEventListener('click', runAnalyze);
+      dom.autofill.addEventListener('click', runAutofill);
+      dom.startStream.addEventListener('click', startStream);
+      dom.stopStream.addEventListener('click', stopStream);
+      document.getElementById('refresh-metrics').addEventListener('click', refreshMetrics);
+      document.getElementById('clear-log').addEventListener('click', () => {
+        dom.log.innerHTML = '';
+      });
+
+      window.addEventListener('beforeunload', () => {
+        if (state.ws) state.ws.close();
+      });
+
+      bootstrap();
+    })();
+  </script>
+</body>
+</html>

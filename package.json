@@ -1,0 +1,16 @@
+{
+  "name": "smartwork",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend",
+    "electron"
+  ],
+  "scripts": {
+    "dev": "echo \"Run frontend and backend separately: npm --workspace backend run dev && npm --workspace frontend run dev\"",
+    "dev:backend": "npm --workspace backend run dev",
+    "dev:frontend": "npm --workspace frontend run dev",
+    "dev:electron": "npm --workspace electron start",
+    "lint": "npm --workspaces run lint"
+  }
+}
