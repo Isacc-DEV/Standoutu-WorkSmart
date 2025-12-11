@@ -22,6 +22,18 @@ export async function api<T = unknown>(
   });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.removeItem('smartwork_user');
+          localStorage.removeItem('smartwork_token');
+          window.location.href = '/auth';
+        } catch (err) {
+          console.error('Failed clearing auth after 401', err);
+        }
+      }
+      throw new Error('Unauthorized');
+    }
     const text = await res.text();
     throw new Error(text || res.statusText);
   }
