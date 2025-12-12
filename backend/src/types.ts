@@ -34,6 +34,7 @@ export interface Resume {
   label: string;
   filePath: string;
   resumeText?: string;
+  resumeDescription?: string;
   createdAt: string;
 }
 

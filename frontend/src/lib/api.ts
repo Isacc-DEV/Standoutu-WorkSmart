@@ -11,13 +11,17 @@ export async function api<T = unknown>(
     tokenOverride ??
     (typeof window !== 'undefined' ? readAuth()?.token ?? undefined : undefined);
 
+  const mergedHeaders: Record<string, string> = {
+    ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (init?.body && !mergedHeaders['Content-Type']) {
+    mergedHeaders['Content-Type'] = 'application/json';
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
-      ...(init?.headers ?? {}),
-    },
+    headers: mergedHeaders,
     cache: 'no-store',
   });
 

@@ -9,8 +9,10 @@ import fsSync from 'fs';
 import { z } from 'zod';
 import { chromium, Browser, Page } from 'playwright';
 import bcrypt from 'bcryptjs';
+import pdfParse from 'pdf-parse';
+import { extractRawText } from 'mammoth';
 import { events, llmSettings, sessions } from './data';
-import { ApplicationSession, BaseInfo, SessionStatus, User, UserRole } from './types';
+import { ApplicationSession, BaseInfo, Resume, SessionStatus, User, UserRole } from './types';
 import { authGuard, forbidObserver, signToken } from './auth';
 import {
   closeAssignmentById,
@@ -24,6 +26,7 @@ import {
   insertProfile,
   insertAssignmentRecord,
   insertResumeRecord,
+  updateResumeParsed,
   insertUser,
   listAssignments,
   listBidderSummaries,
@@ -33,6 +36,7 @@ import {
   pool,
   updateProfileRecord,
 } from './db';
+import { analyzeJobFromUrl, callPromptPack, promptBuilders } from './resumeClassifier';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
 const app = fastify({ logger: true });
@@ -43,6 +47,243 @@ const livePages = new Map<
   string,
   { browser: Browser; page: Page; interval?: NodeJS.Timeout }
 >();
+
+function sanitizeText(input: string | undefined | null) {
+  if (!input) return '';
+  return input.replace(/\u0000/g, '');
+}
+
+function looksBinary(buf: Buffer) {
+  if (!buf || !buf.length) return false;
+  const sample = buf.subarray(0, Math.min(buf.length, 1024));
+  let nonText = 0;
+  for (const byte of sample) {
+    if (byte === 0) return true;
+    // allow tab/newline/carriage return and basic printable range
+    if (byte < 9 || (byte > 13 && byte < 32) || byte > 126) {
+      nonText += 1;
+    }
+  }
+  return nonText / sample.length > 0.3;
+}
+
+async function extractResumeTextFromFile(filePath: string, fileName?: string) {
+  try {
+    const ext = (fileName ?? path.extname(filePath)).toLowerCase();
+    const buf = await fs.readFile(filePath);
+
+    // Try magic-header detection for PDF when extension is missing/misleading.
+    if (buf.subarray(0, 4).toString() === '%PDF') {
+      try {
+        const parsed = await pdfParse(buf);
+        if (parsed.text?.trim()) return sanitizeText(parsed.text);
+      } catch {
+        // fall through
+      }
+    }
+
+    if (ext === '.txt') {
+      return sanitizeText(buf.toString('utf8'));
+    }
+    if (ext === '.docx') {
+      const res = await extractRawText({ path: filePath });
+      return sanitizeText(res.value ?? '');
+    }
+    if (ext === '.pdf') {
+      const parsed = await pdfParse(buf);
+      return sanitizeText(parsed.text ?? '');
+    }
+    if (looksBinary(buf)) {
+      return '';
+    }
+    return sanitizeText(buf.toString('utf8'));
+  } catch (err) {
+    console.error('extractResumeTextFromFile failed', err);
+    return '';
+  }
+}
+
+async function saveParsedResumeJson(resumeId: string, parsed: unknown) {
+  await updateResumeParsed(resumeId, { resumeJson: parsed as Record<string, unknown> });
+}
+
+async function tryParseResumeText(resumeId: string, resumeText: string, baseProfile?: BaseInfo) {
+  if (!resumeText?.trim()) return undefined;
+  try {
+    const prompt = promptBuilders.buildResumeParsePrompt({
+      resumeId,
+      resumeText,
+      baseProfile,
+    });
+    const parsed = await callPromptPack(prompt);
+    if (parsed?.result) return parsed.result;
+    if (parsed) return parsed;
+  } catch (err) {
+    console.error('LLM resume parse failed', err);
+  }
+  return simpleParseResume(resumeText);
+}
+
+function simpleParseResume(resumeText: string) {
+  const lines = resumeText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const emailMatch = resumeText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const phoneMatch = resumeText.match(/(\+?\d[\d\s\-\(\)]{8,})/);
+  const nameLine = lines.find((l) => l && l.length <= 80 && !l.includes('@') && !/\d/.test(l));
+  const summary = lines.slice(0, 6).join(' ').slice(0, 600);
+
+  const skillsIdx = lines.findIndex((l) => /skill/i.test(l));
+  const skillsLine = skillsIdx >= 0 ? lines.slice(skillsIdx + 1, skillsIdx + 4).join(', ') : '';
+  const skills = skillsLine
+    .split(/[,;]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 1)
+    .slice(0, 20);
+  const linkedinMatch = resumeText.match(/https?:\/\/(?:www\.)?linkedin\.com\/[^\s)]+/i);
+
+  // Section detection
+  const workIdx = lines.findIndex((l) => /work\s+experience/i.test(l));
+  const eduIdx = lines.findIndex((l) => /education/i.test(l));
+  const endIdx = (idx: number) => {
+    const cutoffs = [workIdx, eduIdx].filter((n) => n >= 0 && n > idx);
+    return cutoffs.length ? Math.min(...cutoffs) : lines.length;
+  };
+
+  function sliceSection(idx: number) {
+    if (idx < 0) return [];
+    return lines.slice(idx + 1, endIdx(idx));
+  }
+
+  const workLines = sliceSection(workIdx);
+  const educationLines = sliceSection(eduIdx);
+
+  function parseWork(blocks: string[]) {
+    const items: any[] = [];
+    let current: any | null = null;
+    const datePattern = /(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s*\d{4})/i;
+    const rangePattern = /(\d{4})\s*[–-]\s*(Present|\d{4})/i;
+    const bulletPattern = /^[\u2022*\-•]+\s*/;
+    for (const l of blocks) {
+      const isBullet = bulletPattern.test(l);
+      if (!isBullet) {
+        // treat as new role/company line when it looks like a heading
+        const looksLikeRole =
+          /engineer|developer|manager|lead|architect|consultant|specialist|director/i.test(l) ||
+          rangePattern.test(l) ||
+          datePattern.test(l);
+        if (current) items.push(current);
+        if (looksLikeRole) {
+          const dates = l.match(rangePattern) || l.match(datePattern);
+          const parts = l.split(/[–-]/);
+          const titlePart = parts[0]?.trim() ?? '';
+          const companyPart = parts.slice(1).join('-').replace(rangePattern, '').replace(datePattern, '').trim();
+          current = {
+            company: companyPart || l.replace(rangePattern, '').replace(datePattern, '').trim(),
+            title: titlePart || '',
+            start_date: dates ? dates[1] ?? '' : '',
+            end_date: dates && dates[2] ? dates[2] : '',
+            location: '',
+            bullets: [] as string[],
+          };
+        } else if (current) {
+          current.company = `${current.company} ${l}`.trim();
+        } else {
+          current = { company: l, title: '', start_date: '', end_date: '', location: '', bullets: [] as string[] };
+        }
+      } else if (current) {
+        current.bullets.push(l.replace(bulletPattern, '').trim());
+      }
+    }
+    if (current) items.push(current);
+    return items.slice(0, 6);
+  }
+
+  function parseEducation(blocks: string[]) {
+    const edu: any[] = [];
+    const degreePattern = /(bachelor|master|mba|phd|b\.sc|m\.sc|bachelor’s|master’s)/i;
+    for (const l of blocks) {
+      if (!l) continue;
+      const degree = (l.match(degreePattern) || [])[0] ?? '';
+      edu.push({
+        degree: degree || '',
+        field: '',
+        start_date: '',
+        end_date: '',
+        details: [l],
+      });
+      if (edu.length >= 4) break;
+    }
+    return edu;
+  }
+
+  const experience = parseWork(workLines.length ? workLines : lines).map((e) => ({
+    company: e.company || null,
+    title: e.title || null,
+    start_date: e.start_date || null,
+    end_date: e.end_date || null,
+    location: e.location || null,
+    bullets: (e.bullets || []).filter((b: string) => b),
+  }));
+  const education = parseEducation(educationLines);
+
+  return {
+    name: nameLine || '',
+    contact_info: {
+      email: emailMatch?.[0] || null,
+      phone: phoneMatch?.[0]?.trim() || null,
+      location: null,
+      links: {
+        linkedin: linkedinMatch?.[0] || null,
+      },
+    },
+    summary: summary || null,
+    education: education.map((e) => ({
+      degree: e.degree || null,
+      field: e.field || null,
+      start_date: e.start_date || null,
+      end_date: e.end_date || null,
+      details: e.details || [],
+    })),
+    experience: experience.map((e) => ({
+      company: e.company || null,
+      title: e.title || null,
+      start_date: e.start_date || null,
+      end_date: e.end_date || null,
+      location: e.location || null,
+      bullets: e.bullets || [],
+    })),
+    skills,
+  };
+}
+
+async function hydrateResume(resume: Resume, baseProfile?: BaseInfo) {
+  let resumeText = resume.resumeText ?? '';
+  if (!resumeText && resume.filePath) {
+    const resolved = resolveResumePath(resume.filePath);
+    resumeText = await extractResumeTextFromFile(resolved, path.basename(resume.filePath));
+  }
+  resumeText = sanitizeText(resumeText);
+  return { ...resume, resumeText };
+}
+
+const DEFAULT_AUTOFILL_FIELDS = [
+  { field_id: 'first_name', label: 'First name', type: 'text', required: true },
+  { field_id: 'last_name', label: 'Last name', type: 'text', required: true },
+  { field_id: 'email', label: 'Email', type: 'text', required: true },
+  { field_id: 'phone', label: 'Phone', type: 'text', required: false },
+  { field_id: 'city', label: 'City', type: 'text', required: false },
+  { field_id: 'country', label: 'Country', type: 'text', required: false },
+  { field_id: 'work_auth', label: 'Authorized to work?', type: 'checkbox', required: false },
+  {
+    field_id: 'cover_letter',
+    label: 'Why are you a fit?',
+    type: 'textarea',
+    required: false,
+    surrounding_text: 'brief pitch/cover letter, keep to 2-3 sentences',
+  },
+];
 
 // initDb, auth guard, signToken live in dedicated modules
 
@@ -210,6 +451,7 @@ async function bootstrap() {
       filePath: z.string().optional(),
       fileData: z.string().optional(),
       fileName: z.string().optional(),
+      description: z.string().optional(),
     });
     const body = schema.parse(request.body ?? {});
     const baseLabel =
@@ -224,6 +466,9 @@ async function bootstrap() {
     }
     const resumeId = randomUUID();
     let filePath = body.filePath ?? '';
+    let resumeText = '';
+    let resumeJson: Record<string, unknown> | undefined;
+    let resolvedPath = '';
     if (body.fileData) {
       const buffer = Buffer.from(body.fileData, 'base64');
       const ext =
@@ -232,17 +477,29 @@ async function bootstrap() {
       const targetPath = path.join(RESUME_DIR, fileName);
       await fs.writeFile(targetPath, buffer);
       filePath = `/data/resumes/${fileName}`;
+      resolvedPath = targetPath;
+    } else if (filePath) {
+      resolvedPath = resolveResumePath(filePath);
     }
+
+    if (resolvedPath) {
+      resumeText = await extractResumeTextFromFile(resolvedPath, body.fileName ?? path.basename(resolvedPath));
+      resumeJson = await tryParseResumeText(resumeId, resumeText, profile.baseInfo);
+    }
+    resumeText = sanitizeText(resumeText);
+    const resumeDescription = body.description?.trim() || undefined;
     const resume = {
       id: resumeId,
       profileId: id,
       label: baseLabel,
       filePath,
-      resumeText: '',
+      resumeText,
+      resumeDescription,
+      resumeJson,
       createdAt: new Date().toISOString(),
     };
     await insertResumeRecord(resume);
-    return resume;
+    return { ...resume, resumeJson };
   });
 
   app.delete('/profiles/:profileId/resumes/:resumeId', async (request, reply) => {
@@ -420,37 +677,169 @@ async function bootstrap() {
     const session = sessions.find((s) => s.id === id);
     if (!session) return reply.status(404).send({ message: 'Session not found' });
     const profileResumesList = await listResumesByProfile(session.profileId);
-    const recommended = profileResumesList[0];
-    session.recommendedResumeId = recommended?.id;
+    const hydratedResumes = await Promise.all(profileResumesList.map((r) => hydrateResume(r)));
+    const analysis = await analyzeJobFromUrl(
+      session.url,
+      hydratedResumes.map((r) => ({
+        id: r.id,
+        label: r.label,
+        parsed: r.resumeJson ?? {},
+        resume_text: r.resumeText ?? '',
+      })),
+    );
+
+    session.recommendedResumeId = analysis.recommendedResumeId;
     session.status = 'ANALYZED';
     session.jobContext = {
-      title: 'Sample Job',
-      company: 'Demo Corp',
-      summary: 'Placeholder job context for MVP.',
+      title: analysis.title || 'Job',
+      company: 'N/A',
+      summary: 'Analysis from job description',
+      job_description_text: analysis.jobText ?? '',
     };
     events.push({
       id: randomUUID(),
       sessionId: id,
       eventType: 'ANALYZE_DONE',
-      payload: { recommendedResumeId: session.recommendedResumeId },
+      payload: { recommendedLabel: analysis.recommendedLabel, recommendedResumeId: analysis.recommendedResumeId },
       createdAt: new Date().toISOString(),
     });
     return {
-      recommendedResumeId: session.recommendedResumeId,
-      alternatives: profileResumesList.map((r) => ({ id: r.id, label: r.label })),
+      recommendedResumeId: analysis.recommendedResumeId,
+      recommendedLabel: analysis.recommendedLabel,
+      ranked: analysis.ranked.map((r, idx) => ({
+        id: r.id ?? `${r.label}-${idx}`,
+        label: r.label,
+        rank: idx + 1,
+        score: r.score,
+      })),
+      scores: analysis.rawScores,
       jobContext: session.jobContext,
     };
+  });
+
+  // Prompt-pack endpoints (HF-backed)
+  app.post('/llm/resume-parse', async (request, reply) => {
+    const { resumeText, resumeId, filename, baseProfile } = request.body as any;
+    if (!resumeText || !resumeId) return reply.status(400).send({ message: 'resumeText and resumeId are required' });
+    const prompt = promptBuilders.buildResumeParsePrompt({
+      resumeId,
+      filename,
+      resumeText,
+      baseProfile,
+    });
+    const parsed = await callPromptPack(prompt);
+    if (!parsed) return reply.status(502).send({ message: 'LLM parse failed' });
+    return parsed;
+  });
+
+  app.post('/llm/job-analyze', async (request, reply) => {
+    const { job, baseProfile, prefs } = request.body as any;
+    if (!job?.job_description_text) return reply.status(400).send({ message: 'job_description_text required' });
+    const prompt = promptBuilders.buildJobAnalyzePrompt({
+      job,
+      baseProfile,
+      prefs,
+    });
+    const parsed = await callPromptPack(prompt);
+    if (!parsed) return reply.status(502).send({ message: 'LLM analyze failed' });
+    return parsed;
+  });
+
+  app.post('/llm/rank-resumes', async (request, reply) => {
+    const { job, resumes, baseProfile, prefs } = request.body as any;
+    if (!job?.job_description_text || !Array.isArray(resumes)) {
+      return reply.status(400).send({ message: 'job_description_text and resumes[] required' });
+    }
+    const prompt = promptBuilders.buildRankResumesPrompt({
+      job,
+      resumes,
+      baseProfile,
+      prefs,
+    });
+    const parsed = await callPromptPack(prompt);
+    if (!parsed) return reply.status(502).send({ message: 'LLM rank failed' });
+    return parsed;
+  });
+
+  app.post('/llm/autofill-plan', async (request, reply) => {
+    const { pageFields, baseProfile, prefs, jobContext, selectedResume, pageContext } = request.body as any;
+    if (!Array.isArray(pageFields)) return reply.status(400).send({ message: 'pageFields[] required' });
+    const prompt = promptBuilders.buildAutofillPlanPrompt({
+      pageFields,
+      baseProfile,
+      prefs,
+      jobContext,
+      selectedResume,
+      pageContext,
+    });
+    const parsed = await callPromptPack(prompt);
+    if (!parsed) return reply.status(502).send({ message: 'LLM autofill failed' });
+    return parsed;
   });
 
   app.post('/sessions/:id/autofill', async (request, reply) => {
     if (forbidObserver(reply, request.authUser)) return;
     const { id } = request.params as { id: string };
+    const body = (request.body as { selectedResumeId?: string; pageFields?: any[] }) ?? {};
     const session = sessions.find((s) => s.id === id);
     if (!session) return reply.status(404).send({ message: 'Session not found' });
     const profile = await findProfileById(session.profileId);
     if (!profile) return reply.status(404).send({ message: 'Profile not found' });
+    if (body.selectedResumeId) {
+      session.selectedResumeId = body.selectedResumeId;
+    }
+
+    const profileResumes = await listResumesByProfile(session.profileId);
+    const resumeId =
+      session.selectedResumeId ?? session.recommendedResumeId ?? body.selectedResumeId ?? profileResumes[0]?.id;
+    const resumeRecord = resumeId ? await findResumeById(resumeId) : undefined;
+    const hydratedResume = resumeRecord ? await hydrateResume(resumeRecord, profile.baseInfo) : undefined;
+
+    let fillPlan = buildDemoFillPlan(profile.baseInfo);
+    try {
+      const pageFields = Array.isArray(body.pageFields) && body.pageFields.length > 0 ? body.pageFields : DEFAULT_AUTOFILL_FIELDS;
+      if (hydratedResume?.resumeText) {
+        const prompt = promptBuilders.buildAutofillPlanPrompt({
+          pageFields,
+          baseProfile: profile.baseInfo ?? {},
+          prefs: {},
+          jobContext: session.jobContext ?? {},
+          selectedResume: {
+            resume_id: hydratedResume.id,
+            label: hydratedResume.label,
+            parsed_resume_json: hydratedResume.resumeJson ?? {},
+            resume_text: hydratedResume.resumeText,
+          },
+          pageContext: { url: session.url },
+        });
+        const parsed = await callPromptPack(prompt);
+        const llmPlan = parsed?.result?.fill_plan;
+        if (Array.isArray(llmPlan)) {
+          const filled = llmPlan
+            .filter((f: any) => (f.action === 'fill' || f.action === 'select') && f.value)
+            .map((f: any) => ({
+              field: f.field_id ?? f.selector ?? f.label ?? 'field',
+              value: typeof f.value === 'string' ? f.value : JSON.stringify(f.value ?? ''),
+              confidence: typeof f.confidence === 'number' ? f.confidence : undefined,
+            }));
+          const suggestions =
+            (Array.isArray(parsed?.warnings) ? parsed?.warnings : []).map((w: any) => ({
+              field: 'note',
+              suggestion: String(w),
+            })) ?? [];
+          const blocked = llmPlan
+            .filter((f: any) => f.requires_user_review)
+            .map((f: any) => f.field_id ?? f.selector ?? 'field');
+          fillPlan = { filled, suggestions, blocked };
+        }
+      }
+    } catch (err) {
+      request.log.error({ err }, 'LLM autofill failed, using demo plan');
+    }
+
     session.status = 'FILLED';
-    session.fillPlan = buildDemoFillPlan(profile.baseInfo);
+    session.selectedResumeId = resumeId ?? session.selectedResumeId;
+    session.fillPlan = fillPlan;
     events.push({
       id: randomUUID(),
       sessionId: id,

@@ -62,6 +62,9 @@ type AnalyzeResult = {
   recommendedResumeId?: string;
   alternatives?: { id: string; label: string }[];
   jobContext?: Record<string, unknown>;
+  ranked?: { id: string; label: string; rank: number; score?: number }[];
+  recommendedLabel?: string;
+  scores?: Record<string, number>;
 };
 
 type Metrics = {
@@ -75,16 +78,27 @@ type Metrics = {
 async function api(path: string, init?: RequestInit) {
   const token =
     typeof window !== "undefined" ? window.localStorage.getItem("smartwork_token") : null;
+  const headers: Record<string, string> = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (init?.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers ?? {}),
-    },
+    headers,
     cache: "no-store",
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("smartwork_token");
+        window.localStorage.removeItem("smartwork_user");
+        window.location.href = "/auth";
+      }
+      throw new Error("Unauthorized");
+    }
     const text = await res.text();
     throw new Error(text || res.statusText);
   }
@@ -110,6 +124,7 @@ export default function Page() {
   const [error, setError] = useState<string>("");
   const [loadingAction, setLoadingAction] = useState<string>("");
   const [streamConnected, setStreamConnected] = useState(false);
+  const [analyzePopup, setAnalyzePopup] = useState<{ items: { label: string; score?: number }[] } | null>(null);
   const [editingBaseInfo, setEditingBaseInfo] = useState(false);
   const [draftBaseInfo, setDraftBaseInfo] = useState<BaseInfo>({});
   const [webviewStatus, setWebviewStatus] = useState<"idle" | "loading" | "ready" | "failed">("idle");
@@ -280,15 +295,34 @@ export default function Page() {
     if (!session) return;
     setLoadingAction("analyze");
     setError("");
+    setAnalyzePopup(null);
     try {
       const res = await api(`/sessions/${session.id}/analyze`, {
         method: "POST",
       });
-      setRecommended(res as AnalyzeResult);
-      if (res.recommendedResumeId) {
-        setResumeChoice(res.recommendedResumeId);
+      const result = res as AnalyzeResult;
+      setRecommended(result);
+      if (result.recommendedResumeId) {
+        setResumeChoice(result.recommendedResumeId);
+      } else if (result.recommendedLabel) {
+        const match = resumes.find(
+          (r) => r.label.toLowerCase() === result.recommendedLabel?.toLowerCase(),
+        );
+        if (match) setResumeChoice(match.id);
       }
-      setSession({ ...session, status: "ANALYZED" });
+      if (result.ranked?.length) {
+        const top = result.ranked.slice(0, 4);
+        if (top.length) {
+          const items = top.map((r) => ({ label: r.label, score: r.score }));
+          setAnalyzePopup({ items });
+        }
+      }
+      setSession({
+        ...session,
+        status: "ANALYZED",
+        recommendedResumeId: result.recommendedResumeId ?? session.recommendedResumeId,
+        jobContext: result.jobContext ?? session.jobContext,
+      });
     } catch (err) {
       console.error(err);
       setError("Analyse failed. Backend must be running.");
@@ -304,9 +338,14 @@ export default function Page() {
     try {
       const res = await api(`/sessions/${session.id}/autofill`, {
         method: "POST",
+        body: JSON.stringify({ selectedResumeId: resumeChoice || undefined }),
       });
       setFillPlan(res.fillPlan);
-      setSession({ ...session, status: "FILLED" });
+      setSession({
+        ...session,
+        status: "FILLED",
+        selectedResumeId: resumeChoice || session.selectedResumeId,
+      });
     } catch (err) {
       console.error(err);
       setError("Autofill failed. Backend must be running.");
@@ -403,6 +442,7 @@ export default function Page() {
   }
 
   return (
+    <>
     <main className="min-h-screen w-full bg-white text-slate-900">
       <TopNav />
       <div className="mx-auto w-full max-w-7xl px-6 py-8 space-y-4">
@@ -635,23 +675,23 @@ export default function Page() {
 
           {/* Right column 25% */}
           <section className="flex flex-col gap-4">
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold">Analyse</p>
-                <span className="text-[11px] text-slate-700">Pick best resume</span>
-              </div>
-              <button
-                onClick={handleAnalyze}
-                disabled={!session || loadingAction === "analyze"}
-                className="w-full rounded-xl bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] shadow-[0_14px_40px_-18px_rgba(94,243,197,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loadingAction === "analyze" ? "Analysing..." : "Run analyse"}
-              </button>
-              <div className="rounded-xl border border-slate-200 bg-slate-100 px-3 py-3 space-y-2">
-                <div className="flex items-center justify-between text-xs text-slate-800">
-                  <span>Selected resume</span>
-                  <span className="rounded-full bg-[#111d38] px-3 py-1 text-[11px] text-[#5ef3c5]">
-                    {resumeChoice
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold">Analyse</p>
+                  <span className="text-[11px] text-slate-700">Pick best resume</span>
+                </div>
+                <button
+                  onClick={handleAnalyze}
+                  disabled={!session || loadingAction === "analyze"}
+                  className="w-full rounded-xl bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] shadow-[0_14px_40px_-18px_rgba(94,243,197,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loadingAction === "analyze" ? "Analysing..." : "Run analyse"}
+                </button>
+                <div className="rounded-xl border border-slate-200 bg-slate-100 px-3 py-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-800">
+                    <span>Selected resume</span>
+                    <span className="rounded-full bg-[#111d38] px-3 py-1 text-[11px] text-[#5ef3c5]">
+                      {resumeChoice
                       ? resumes.find((r) => r.id === resumeChoice)?.label ?? "Manual"
                       : "None"}
                   </span>
@@ -853,6 +893,45 @@ export default function Page() {
 
       </div>
     </main>
+    {analyzePopup ? (
+      <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/5 pt-10">
+        <div className="w-[380px] rounded-3xl border border-slate-200 bg-white/95 px-5 py-4 shadow-2xl backdrop-blur">
+          <div className="flex items-center justify-between pb-2">
+            <div className="text-base font-semibold text-slate-900">Analysis result</div>
+            <button
+              onClick={() => setAnalyzePopup(null)}
+              className="rounded-full px-3 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="space-y-2">
+            {analyzePopup.items.map((item, idx) => {
+              const rankLabel = idx === 0 ? "1st" : idx === 1 ? "2nd" : idx === 2 ? "3rd" : `${idx + 1}th`;
+              const isTop = idx === 0;
+              return (
+                <div
+                  key={`${item.label}-${idx}`}
+                  className={`flex items-center justify-between rounded-2xl px-4 py-3 ${
+                    isTop ? "bg-slate-900 text-white shadow-md" : "bg-slate-50 text-slate-800"
+                  }`}
+                >
+                  <div className={`font-semibold ${isTop ? "text-lg" : "text-sm"}`}>
+                    {rankLabel}: {item.label}
+                  </div>
+                  {typeof item.score !== "undefined" ? (
+                    <div className={`${isTop ? "text-sm text-slate-100" : "text-xs text-slate-600"}`}>
+                      score: {Number.isFinite(item.score) ? item.score.toFixed(2) : String(item.score)}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }
 
@@ -907,4 +986,3 @@ function safeHostname(url: string) {
     return "N/A";
   }
 }
-
