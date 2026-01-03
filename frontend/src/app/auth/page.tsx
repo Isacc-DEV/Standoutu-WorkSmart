@@ -13,11 +13,14 @@ export default function AuthPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleSubmit() {
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setError("");
     setLoading(true);
     try {
       const path = mode === "signin" ? "/auth/login" : "/auth/signup";
+
+      console.log("Submitting to", path);
       const body =
         mode === "signin" ? { email, password } : { email, password, name };
       const res = await api(path, {
@@ -73,7 +76,7 @@ export default function AuthPage() {
           </button>
         </div>
 
-        <div className="mt-6 w-full space-y-3 rounded-3xl border border-slate-200 bg-white p-8 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.12)]">
+        <form onSubmit={handleSubmit} className="mt-6 w-full space-y-3 rounded-3xl border border-slate-200 bg-white p-8 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.12)]">
           {mode === "signup" && (
             <input
               value={name}
@@ -101,13 +104,13 @@ export default function AuthPage() {
             </div>
           )}
           <button
-            onClick={handleSubmit}
+            type="submit"
             disabled={loading || !email || !password || (mode === "signup" && !name)}
             className="w-full rounded-xl bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? "Please wait..." : mode === "signin" ? "Sign in" : "Create account"}
           </button>
-        </div>
+        </form>
       </div>
     </main>
   );

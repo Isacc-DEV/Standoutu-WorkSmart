@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { signIn, signOut, useSession } from 'next-auth/react';
 import FullCalendar from '@fullcalendar/react';
@@ -11,6 +11,12 @@ import interactionPlugin from '@fullcalendar/interaction';
 import TopNav from '../../components/TopNav';
 import { useAuth } from '../../lib/useAuth';
 
+type CalendarAccount = {
+  email: string;
+  name?: string | null;
+  timezone?: string | null;
+};
+
 type CalendarEvent = {
   id: string;
   title: string;
@@ -19,14 +25,11 @@ type CalendarEvent = {
   isAllDay?: boolean;
   organizer?: string;
   location?: string;
+  mailbox?: string;
 };
 
 type CalendarEventsResponse = {
-  account?: {
-    email?: string | null;
-    name?: string | null;
-    timezone?: string | null;
-  };
+  accounts?: CalendarAccount[];
   events: CalendarEvent[];
   source: 'graph' | 'sample';
   warning?: string;
@@ -49,9 +52,11 @@ export default function CalendarPage() {
   const [error, setError] = useState<string | null>(null);
   const [dataSource, setDataSource] = useState<'graph' | 'sample'>('graph');
   const [warning, setWarning] = useState<string | undefined>();
-  const [connectedEmail, setConnectedEmail] = useState<string | undefined>();
-  const [connectedName, setConnectedName] = useState<string | undefined>();
+  const [connectedAccounts, setConnectedAccounts] = useState<CalendarAccount[]>([]);
   const [connectedTimezone, setConnectedTimezone] = useState<string | undefined>(defaultTimezone);
+  const [extraMailboxes, setExtraMailboxes] = useState<string[]>([]);
+  const [mailboxInput, setMailboxInput] = useState('');
+  const [mailboxError, setMailboxError] = useState<string | null>(null);
 
   useEffect(() => {
     if (loading) return;
@@ -60,19 +65,16 @@ export default function CalendarPage() {
     }
   }, [loading, user, token, router]);
 
-  useEffect(() => {
-    if (outlookStatus !== 'authenticated' || !viewRange) return;
-    void fetchEvents(viewRange);
-  }, [outlookStatus, viewRange]);
-
   const eventContent = (arg: EventContentArg) => {
     const location = arg.event.extendedProps.location as string | undefined;
     const organizer = arg.event.extendedProps.organizer as string | undefined;
+    const mailbox = arg.event.extendedProps.mailbox as string | undefined;
     return (
       <div className="flex flex-col gap-0.5 text-[11px] leading-tight text-white">
         <div className="font-semibold">{arg.event.title}</div>
         {location ? <div className="text-white/90">{location}</div> : null}
         {organizer ? <div className="text-white/75">{organizer}</div> : null}
+        {mailbox ? <div className="text-white/70">{mailbox}</div> : null}
       </div>
     );
   };
@@ -90,11 +92,41 @@ export default function CalendarPage() {
     [events],
   );
 
-  async function fetchEvents(range: { start: string; end: string }) {
+  const primaryEmail = outlookSession?.user?.email?.toLowerCase();
+
+  const handleAddMailbox = () => {
+    const nextMailbox = mailboxInput.trim().toLowerCase();
+    if (!nextMailbox) return;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextMailbox)) {
+      setMailboxError('Enter a valid email address.');
+      return;
+    }
+    if (primaryEmail && nextMailbox === primaryEmail) {
+      setMailboxError('This mailbox is already connected.');
+      return;
+    }
+    if (extraMailboxes.includes(nextMailbox)) {
+      setMailboxError('Mailbox already added.');
+      return;
+    }
+    setExtraMailboxes((prev) => [...prev, nextMailbox].sort());
+    setMailboxInput('');
+    setMailboxError(null);
+  };
+
+  const handleRemoveMailbox = (mailbox: string) => {
+    setExtraMailboxes((prev) => prev.filter((entry) => entry !== mailbox));
+  };
+
+  const fetchEvents = useCallback(async (range: { start: string; end: string }) => {
     setEventsLoading(true);
     setError(null);
     try {
       const qs = new URLSearchParams({ start: range.start, end: range.end });
+      const mailboxParam = extraMailboxes.filter((mailbox) => mailbox && mailbox !== primaryEmail);
+      if (mailboxParam.length) {
+        qs.set('mailboxes', mailboxParam.join(','));
+      }
       const res = await fetch(`/api/calendar/outlook?${qs.toString()}`, { cache: 'no-store' });
       const data = (await res.json()) as CalendarEventsResponse;
       if (!res.ok) {
@@ -105,21 +137,28 @@ export default function CalendarPage() {
       setEvents(data.events || []);
       setDataSource(data.source || 'graph');
       setWarning(data.warning);
-      setConnectedEmail(data.account?.email ?? outlookSession?.user?.email ?? undefined);
-      setConnectedName(data.account?.name ?? outlookSession?.user?.name ?? undefined);
-      setConnectedTimezone(data.account?.timezone ?? defaultTimezone);
+      setConnectedAccounts(data.accounts ?? []);
+      const primaryAccount =
+        data.accounts?.find((account) => account.email.toLowerCase() === primaryEmail) ??
+        data.accounts?.[0];
+      setConnectedTimezone(primaryAccount?.timezone ?? defaultTimezone);
     } catch (err) {
       console.error(err);
       setError('Unable to load events right now.');
     } finally {
       setEventsLoading(false);
     }
-  }
+  }, [extraMailboxes, primaryEmail]);
+
+  useEffect(() => {
+    if (outlookStatus !== 'authenticated' || !viewRange) return;
+    void fetchEvents(viewRange);
+  }, [outlookStatus, viewRange, fetchEvents]);
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#eaf2ff] via-[#f4f7ff] to-white text-slate-900">
       <TopNav />
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-8">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
         {/* <div className="overflow-hidden rounded-3xl border border-slate-200/60 bg-white/90 shadow-[0_20px_80px_-50px_rgba(15,23,42,0.6)]">
           <div className="bg-gradient-to-r from-sky-50 via-white to-indigo-50 px-8 py-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -158,7 +197,7 @@ export default function CalendarPage() {
         </div> */}
 
         <div className="flex gap-6 items-stretch">
-          <aside className="space-y-4 md:sticky md:top-6 h-full">
+          <aside className="space-y-4 basis-[30%] md:sticky md:top-6 h-full">
             <div className="h-full rounded-3xl border border-slate-200/70 bg-white/90 p-5 shadow-[0_18px_60px_-50px_rgba(15,23,42,0.4)]">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -182,29 +221,92 @@ export default function CalendarPage() {
                     Connect your Outlook account to see meetings in real time.
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    className="flex w-full flex-col items-start gap-1 rounded-2xl border border-sky-200 bg-sky-50 px-3 py-3 text-left shadow-inner transition hover:border-sky-300"
-                    onClick={() => viewRange && fetchEvents(viewRange)}
-                  >
-                    <span className="text-[11px] uppercase tracking-[0.18em] text-sky-700">Active</span>
-                    <span className="text-sm font-semibold text-slate-900">{connectedName || connectedEmail}</span>
-                    <span className="text-xs text-slate-600">{connectedEmail}</span>
-                    {connectedTimezone ? (
-                      <span className="text-[11px] text-slate-500">Timezone {connectedTimezone}</span>
-                    ) : null}
-                  </button>
+                  <div className="space-y-3">
+                    {connectedAccounts.length ? (
+                      connectedAccounts.map((account) => {
+                        const isPrimary = primaryEmail && account.email.toLowerCase() === primaryEmail;
+                        return (
+                          <div
+                            key={account.email}
+                            className="flex w-full flex-col items-start gap-1 rounded-2xl border border-sky-200 bg-sky-50 px-3 py-3 text-left shadow-inner"
+                          >
+                            <span className="text-[11px] uppercase tracking-[0.18em] text-sky-700">
+                              {isPrimary ? 'Primary' : 'Connected'}
+                            </span>
+                            <span className="text-sm font-semibold text-slate-900">
+                              {account.name || account.email}
+                            </span>
+                            <span className="text-xs text-slate-600">{account.email}</span>
+                            {account.timezone ? (
+                              <span className="text-[11px] text-slate-500">
+                                Timezone {account.timezone}
+                              </span>
+                            ) : null}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
+                        No mailboxes connected yet.
+                      </div>
+                    )}
+                    <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                        Add mailbox
+                      </div>
+                      <div className="mt-2 flex gap-2">
+                        <input
+                          value={mailboxInput}
+                          onChange={(e) => {
+                            setMailboxInput(e.target.value);
+                            if (mailboxError) setMailboxError(null);
+                          }}
+                          placeholder="name@company.com"
+                          className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none ring-1 ring-transparent focus:ring-slate-300"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddMailbox}
+                          className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+                        >
+                          Add
+                        </button>
+                      </div>
+                      {mailboxError ? (
+                        <div className="mt-2 text-xs text-red-600">{mailboxError}</div>
+                      ) : null}
+                      {extraMailboxes.length ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {extraMailboxes.map((mailbox) => (
+                            <span
+                              key={mailbox}
+                              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700"
+                            >
+                              {mailbox}
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveMailbox(mailbox)}
+                                className="text-slate-500 hover:text-slate-800"
+                              >
+                                &times;
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
           </aside>
 
-          <section className="space-y-4 flex-1">
+          <section className="space-y-4 basis-[70%]">
             <div className="rounded-3xl border border-slate-200/70 bg-white/90 p-5 shadow-[0_18px_60px_-50px_rgba(15,23,42,0.4)]">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">Upcoming events</p>
-                  <h2 className="text-2xl font-semibold text-slate-900">Live Microsoft Graph calendar</h2>
+                  <h2 className="text-2xl font-semibold text-slate-900">Calendar</h2>
                   <p className="text-sm text-slate-600">
                     We refresh on focus and every few minutes. Switch to webhooks when ready.
                   </p>
@@ -238,10 +340,13 @@ export default function CalendarPage() {
                 </div>
               </div>
 
-              {connectedEmail ? (
+              {connectedAccounts.length ? (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <span className={chipBase}>{connectedEmail}</span>
-                  {connectedName ? <span className={chipBase}>{connectedName}</span> : null}
+                  {connectedAccounts.map((account) => (
+                    <span key={account.email} className={chipBase}>
+                      {account.name ? `${account.name} (${account.email})` : account.email}
+                    </span>
+                  ))}
                 </div>
               ) : null}
 
@@ -295,3 +400,4 @@ export default function CalendarPage() {
     </main>
   );
 }
+

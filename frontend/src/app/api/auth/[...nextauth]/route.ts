@@ -1,9 +1,26 @@
 import NextAuth, { type NextAuthOptions } from 'next-auth';
+import { type JWT } from 'next-auth/jwt';
 import AzureADProvider from 'next-auth/providers/azure-ad';
 
 const tenantId = process.env.MS_TENANT_ID || 'common';
 
-async function refreshAccessToken(token: any) {
+type AzureTokenResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  error_description?: string;
+};
+
+type AuthToken = JWT & {
+  access_token?: string;
+  refresh_token?: string;
+  expires_at?: number;
+  id_token?: string;
+  error?: 'RefreshTokenMissing' | 'RefreshAccessTokenError';
+  message?: string;
+};
+
+async function refreshAccessToken(token: AuthToken) {
   try {
     if (!token.refresh_token) return { ...token, error: 'RefreshTokenMissing' as const };
     const params = new URLSearchParams({
@@ -15,7 +32,7 @@ async function refreshAccessToken(token: any) {
     });
     const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params });
-    const data = (await res.json()) as any;
+    const data = (await res.json()) as AzureTokenResponse;
     if (!res.ok) {
       return { ...token, error: 'RefreshAccessTokenError' as const, message: data?.error_description };
     }
@@ -26,6 +43,7 @@ async function refreshAccessToken(token: any) {
       expires_at: Date.now() + (data.expires_in ?? 3500) * 1000,
     };
   } catch (err) {
+    console.error(err);
     return { ...token, error: 'RefreshAccessTokenError' as const };
   }
 }
