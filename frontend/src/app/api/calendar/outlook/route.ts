@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../../auth/[...nextauth]/route';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:4000';
+
 type GraphEvent = {
   id: string;
   subject?: string;
@@ -41,10 +43,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
   }
 
+  const authHeader = request.headers.get('authorization');
+
   const url = new URL(request.url);
   const start = url.searchParams.get('start') || new Date().toISOString();
   const end = url.searchParams.get('end') || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const tz = session.user?.timeZone || 'UTC';
+  const tzParam = url.searchParams.get('timezone');
+  const tz = tzParam || session.user?.timeZone || 'UTC';
   const primaryEmail = session.user?.email?.toLowerCase();
   const mailboxParams = [
     ...url.searchParams.getAll('mailbox'),
@@ -119,10 +124,46 @@ export async function GET(request: NextRequest) {
     ? `Failed to load calendars for: ${failed.map((result) => result.mailbox).join(', ')}.`
     : undefined;
 
+  let storedEvents = events;
+  let storageWarning: string | undefined;
+  const syncMailboxes = successful.map((result) => result.mailbox);
+
+  if (!authHeader) {
+    storageWarning = 'Missing auth token; events not stored.';
+  } else {
+    try {
+      const syncRes = await fetch(`${API_BASE}/calendar/events/sync`, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mailboxes: syncMailboxes,
+          timezone: tz,
+          events,
+        }),
+      });
+      if (syncRes.ok) {
+        const syncData = (await syncRes.json()) as { events?: typeof events };
+        if (Array.isArray(syncData.events)) {
+          storedEvents = syncData.events as typeof events;
+        }
+      } else {
+        storageWarning = 'Failed to store events; showing live data.';
+      }
+    } catch (err) {
+      console.error(err);
+      storageWarning = 'Failed to store events; showing live data.';
+    }
+  }
+
+  const combinedWarning = [warning, storageWarning].filter(Boolean).join(' ') || undefined;
+
   return NextResponse.json({
     accounts: accounts.sort((a, b) => (a.email === primaryEmail ? -1 : b.email === primaryEmail ? 1 : 0)),
-    events,
+    events: storedEvents,
     source: 'graph',
-    warning,
+    warning: combinedWarning,
   });
 }

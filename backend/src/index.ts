@@ -31,6 +31,7 @@ import {
   listProfileAccountsForUser,
   upsertProfileAccount,
   touchProfileAccount,
+  replaceCalendarEvents,
   insertLabelAlias,
   insertAssignmentRecord,
   insertResumeRecord,
@@ -1359,6 +1360,46 @@ async function bootstrap() {
       status: 'ACTIVE',
     });
     return account;
+  });
+
+
+  app.post('/calendar/events/sync', async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: 'Unauthorized' });
+    }
+    const schema = z.object({
+      mailboxes: z.array(z.string().email()).default([]),
+      timezone: z.string().min(2).optional(),
+      events: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            title: z.string().optional(),
+            start: z.string().min(1),
+            end: z.string().min(1),
+            isAllDay: z.boolean().optional(),
+            organizer: z.string().optional(),
+            location: z.string().optional(),
+            mailbox: z.string().email(),
+          }),
+        )
+        .default([]),
+    });
+    const body = schema.parse(request.body ?? {});
+    const mailboxes = body.mailboxes.map((mailbox) => mailbox.toLowerCase());
+    const events = body.events.map((event) => ({
+      ...event,
+      mailbox: event.mailbox.toLowerCase(),
+    }));
+    const storedEvents = await replaceCalendarEvents({
+      ownerUserId: actor.id,
+      mailboxes,
+      timezone: body.timezone ?? null,
+      events,
+    });
+    return { events: storedEvents };
   });
 
   app.get('/calendar/events', async (request, reply) => {

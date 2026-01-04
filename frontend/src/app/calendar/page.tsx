@@ -39,8 +39,11 @@ type CalendarEventsResponse = {
 const chipBase =
   'inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700';
 
-const defaultTimezone =
-  typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC';
+const TIMEZONE_OPTIONS = [
+  { id: 'ETC', label: 'ETC', graph: 'UTC', calendar: 'UTC' },
+  { id: 'UTC', label: 'UTC', graph: 'UTC', calendar: 'UTC' },
+  { id: 'PTC', label: 'PTC', graph: 'Pacific Standard Time', calendar: 'America/Los_Angeles' },
+];
 
 export default function CalendarPage() {
   const router = useRouter();
@@ -50,13 +53,12 @@ export default function CalendarPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dataSource, setDataSource] = useState<'graph' | 'sample'>('graph');
   const [warning, setWarning] = useState<string | undefined>();
   const [connectedAccounts, setConnectedAccounts] = useState<CalendarAccount[]>([]);
-  const [connectedTimezone, setConnectedTimezone] = useState<string | undefined>(defaultTimezone);
   const [extraMailboxes, setExtraMailboxes] = useState<string[]>([]);
   const [mailboxInput, setMailboxInput] = useState('');
   const [mailboxError, setMailboxError] = useState<string | null>(null);
+  const [timezoneId, setTimezoneId] = useState<string>(TIMEZONE_OPTIONS[0].id);
 
   useEffect(() => {
     if (loading) return;
@@ -90,6 +92,11 @@ export default function CalendarPage() {
         allDay: Boolean(ev.isAllDay),
       })),
     [events],
+  );
+
+  const selectedTimezone = useMemo(
+    () => TIMEZONE_OPTIONS.find((tz) => tz.id === timezoneId) ?? TIMEZONE_OPTIONS[0],
+    [timezoneId],
   );
 
   const primaryEmail = outlookSession?.user?.email?.toLowerCase();
@@ -127,28 +134,38 @@ export default function CalendarPage() {
       if (mailboxParam.length) {
         qs.set('mailboxes', mailboxParam.join(','));
       }
-      const res = await fetch(`/api/calendar/outlook?${qs.toString()}`, { cache: 'no-store' });
-      const data = (await res.json()) as CalendarEventsResponse;
+      qs.set('timezone', selectedTimezone.graph);
+      const res = await fetch(`/api/calendar/outlook?${qs.toString()}`, {
+        cache: 'no-store',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const raw = await res.text();
+      let data: CalendarEventsResponse | null = null;
+      if (raw) {
+        try {
+          data = JSON.parse(raw) as CalendarEventsResponse;
+        } catch (err) {
+          console.error(err);
+          setError('Invalid response from server.');
+          setEvents([]);
+          return;
+        }
+      }
       if (!res.ok) {
-        setError(data.message || 'Unable to load events.');
+        setError(data?.message || res.statusText || 'Unable to load events.');
         setEvents([]);
         return;
       }
-      setEvents(data.events || []);
-      setDataSource(data.source || 'graph');
-      setWarning(data.warning);
-      setConnectedAccounts(data.accounts ?? []);
-      const primaryAccount =
-        data.accounts?.find((account) => account.email.toLowerCase() === primaryEmail) ??
-        data.accounts?.[0];
-      setConnectedTimezone(primaryAccount?.timezone ?? defaultTimezone);
+      setEvents(data?.events || []);
+      setWarning(data?.warning);
+      setConnectedAccounts(data?.accounts ?? []);
     } catch (err) {
       console.error(err);
       setError('Unable to load events right now.');
     } finally {
       setEventsLoading(false);
     }
-  }, [extraMailboxes, primaryEmail]);
+  }, [extraMailboxes, primaryEmail, selectedTimezone.graph, token]);
 
   useEffect(() => {
     if (outlookStatus !== 'authenticated' || !viewRange) return;
@@ -237,11 +254,9 @@ export default function CalendarPage() {
                               {account.name || account.email}
                             </span>
                             <span className="text-xs text-slate-600">{account.email}</span>
-                            {account.timezone ? (
-                              <span className="text-[11px] text-slate-500">
-                                Timezone {account.timezone}
-                              </span>
-                            ) : null}
+                            <span className="text-[11px] text-slate-500">
+                              Timezone {selectedTimezone.label}
+                            </span>
                           </div>
                         );
                       })
@@ -250,6 +265,25 @@ export default function CalendarPage() {
                         No mailboxes connected yet.
                       </div>
                     )}
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Time zone</div>
+                      <div className="mt-2">
+                        <select
+                          value={timezoneId}
+                          onChange={(e) => setTimezoneId(e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none ring-1 ring-transparent focus:ring-slate-300"
+                        >
+                          {TIMEZONE_OPTIONS.map((tz) => (
+                            <option key={tz.id} value={tz.id}>
+                              {tz.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="mt-2 text-xs text-slate-500">
+                        Calendar times show in {selectedTimezone.label}.
+                      </div>
+                    </div>
                     <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-3 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
                         Add mailbox
@@ -312,31 +346,13 @@ export default function CalendarPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                <button
-                  onClick={() => (outlookStatus === 'authenticated' ? signOut({ callbackUrl: '/calendar' }) : signIn('azure-ad'))}
-                  className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_40px_-20px_rgba(14,165,233,0.8)] transition hover:brightness-110 disabled:opacity-60"
-                >
-                  {outlookStatus === 'authenticated' ? 'Disconnect Outlook' : 'Connect Outlook'}
-                </button>
-                <button
-                  onClick={() => viewRange && outlookStatus === 'authenticated' && fetchEvents(viewRange)}
-                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
-                  disabled={outlookStatus !== 'authenticated' || !viewRange || eventsLoading}
-                >
-                  Refresh
-                </button>
-              </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`${chipBase} ${
-                      dataSource === 'sample'
-                        ? 'border-amber-200 bg-amber-50 text-amber-800'
-                        : 'border-sky-200 bg-sky-50 text-sky-700'
-                    }`}
+                  <button
+                    onClick={() => viewRange && outlookStatus === 'authenticated' && fetchEvents(viewRange)}
+                    className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+                    disabled={outlookStatus !== 'authenticated' || !viewRange || eventsLoading}
                   >
-                    {dataSource === 'sample' ? 'Sample events' : 'Microsoft Graph'}
-                  </span>
-                  {connectedTimezone ? <span className={chipBase}>TZ {connectedTimezone}</span> : null}
+                    Refresh
+                  </button>
                 </div>
               </div>
 
@@ -383,6 +399,7 @@ export default function CalendarPage() {
                     weekends
                     expandRows
                     nowIndicator
+                    timeZone={selectedTimezone.calendar}
                     events={calendarEvents}
                     eventContent={eventContent}
                     eventBackgroundColor="#0284c7"
