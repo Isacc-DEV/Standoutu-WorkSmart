@@ -2988,7 +2988,35 @@ async function bootstrap() {
     const message = await getMessageById(messageId);
     if (!message)
       return reply.status(404).send({ message: "Message not found" });
+    
+    const thread = await findCommunityThreadById(message.threadId);
+    if (!thread) return reply.status(404).send({ message: "Thread not found" });
+    
+    const isMember = await isCommunityThreadMember(message.threadId, actor.id);
+    if (!isMember && thread.threadType === "DM") {
+      return reply.status(403).send({ message: "Not a member of this thread" });
+    }
+    
     const pinned = await pinMessage(message.threadId, messageId, actor.id);
+    if (!pinned) {
+      return reply.status(409).send({ message: "Message already pinned" });
+    }
+    
+    // Broadcast pin event
+    const memberIds = await listCommunityThreadMemberIds(message.threadId);
+    const allowed = new Set(memberIds);
+    communityClients.forEach((c) => {
+      if (allowed.has(c.user.id)) {
+        sendCommunityPayload(c, {
+          type: "message_pinned",
+          pinned: {
+            threadId: message.threadId,
+            message: pinned.message
+          }
+        });
+      }
+    });
+    
     return pinned;
   });
 
@@ -3002,6 +3030,24 @@ async function bootstrap() {
     if (!message)
       return reply.status(404).send({ message: "Message not found" });
     const unpinned = await unpinMessage(message.threadId, messageId);
+    
+    // Broadcast unpin event
+    if (unpinned) {
+      const memberIds = await listCommunityThreadMemberIds(message.threadId);
+      const allowed = new Set(memberIds);
+      communityClients.forEach((c) => {
+        if (allowed.has(c.user.id)) {
+          sendCommunityPayload(c, {
+            type: "message_unpinned",
+            unpinned: {
+              threadId: message.threadId,
+              messageId
+            }
+          });
+        }
+      });
+    }
+    
     return { success: unpinned };
   });
 
@@ -3190,10 +3236,13 @@ async function bootstrap() {
           communityClients.forEach((c) => {
             if (c.user.id !== user!.id && allowed.has(c.user.id)) {
               sendCommunityPayload(c, {
-                type: "typing:start",
-                threadId: payload.threadId,
-                userId: user!.id,
-                userName: user!.name,
+                type: "typing",
+                typing: {
+                  threadId: payload.threadId,
+                  userId: user!.id,
+                  userName: user!.name,
+                  action: "start"
+                }
               });
             }
           });
@@ -3209,9 +3258,13 @@ async function bootstrap() {
           communityClients.forEach((c) => {
             if (c.user.id !== user!.id && allowed.has(c.user.id)) {
               sendCommunityPayload(c, {
-                type: "typing:stop",
-                threadId: payload.threadId,
-                userId: user!.id,
+                type: "typing",
+                typing: {
+                  threadId: payload.threadId,
+                  userId: user!.id,
+                  userName: user!.name,
+                  action: "stop"
+                }
               });
             }
           });

@@ -70,6 +70,11 @@ export function Sidebar({
                     <span className="flex items-center gap-2 font-semibold">
                       <span className={`text-xs font-semibold ${active ? 'text-[var(--community-accent)]' : 'text-slate-400'}`}>#</span>
                       {channel.name ?? 'channel'}
+                      {unread > 0 && (
+                        <span className="ml-1 rounded-full bg-red-500 px-2 py-0.5 text-[10px] text-white">
+                          {unread}
+                        </span>
+                      )}
                     </span>
                     {channel.description && (
                       <span className={`text-[11px] ${active ? 'text-slate-200' : 'text-slate-500'}`}>
@@ -78,11 +83,6 @@ export function Sidebar({
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {unread > 0 && (
-                      <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] text-white">
-                        {unread}
-                      </span>
-                    )}
                     <span className={`text-[10px] ${active ? 'text-slate-200' : 'text-slate-400'}`}>
                       {formatTime(channel.lastMessageAt ?? channel.createdAt)}
                     </span>

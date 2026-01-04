@@ -17,6 +17,7 @@ import {
   formatFullTime,
   formatDate,
   formatBytes,
+  cn,
 } from '../../components/community/utils';
 import type {
   CommunityChannel,
@@ -52,14 +53,18 @@ export function CommunityContent() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showPinned, setShowPinned] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; message: CommunityMessage } | null>(null);
+  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const handleWebSocketMessage = useMemo(
     () => (payload: any) => {
@@ -231,6 +236,37 @@ export function CommunityContent() {
     bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages.length]);
 
+  useEffect(() => {
+    if (scrollToMessageId) {
+      const messageEl = messageRefs.current.get(scrollToMessageId);
+      if (messageEl) {
+        messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        messageEl.classList.add('highlight-message');
+        setTimeout(() => {
+          messageEl.classList.remove('highlight-message');
+        }, 2000);
+        setScrollToMessageId(null);
+      }
+    }
+  }, [scrollToMessageId, messages]);
+
+  useEffect(() => {
+    if (selectedFiles.length > 0) {
+      const urls = selectedFiles.map((file) => {
+        if (file.type.startsWith('image/')) {
+          return URL.createObjectURL(file);
+        }
+        return '';
+      }).filter(Boolean);
+      setPreviewUrls(urls);
+      return () => {
+        urls.forEach((url) => URL.revokeObjectURL(url));
+      };
+    } else {
+      setPreviewUrls([]);
+    }
+  }, [selectedFiles]);
+
   const activeChannel = useMemo(() => channels.find((c) => c.id === activeThreadId), [channels, activeThreadId]);
   const activeDm = useMemo(() => dms.find((d) => d.id === activeThreadId), [dms, activeThreadId]);
   const activeType: CommunityThreadType | null = activeChannel ? 'CHANNEL' : activeDm ? 'DM' : null;
@@ -297,9 +333,10 @@ export function CommunityContent() {
 
   async function loadUnreadCounts(authToken: string) {
     try {
-      const data = await api<UnreadInfo[]>('/community/unread-summary', undefined, authToken);
+      const data = await api<{ unreads: UnreadInfo[] }>('/community/unread-summary', undefined, authToken);
       const newMap = new Map<string, number>();
-      (data || []).forEach((info) => newMap.set(info.threadId, info.unreadCount));
+      const unreads = data?.unreads || [];
+      (Array.isArray(unreads) ? unreads : []).forEach((info) => newMap.set(info.threadId, info.unreadCount));
       setUnreadMap(newMap);
     } catch (err) {
       console.error(err);
@@ -395,7 +432,7 @@ export function CommunityContent() {
   }
 
   async function handleSendMessage() {
-    if (!activeThreadId || !draftMessage.trim() || !token) return;
+    if (!activeThreadId || (!draftMessage.trim() && selectedFiles.length === 0) || !token) return;
     if (selectedFiles.length > 0) {
       await handleUploadAndSend();
       return;
@@ -446,12 +483,25 @@ export function CommunityContent() {
         const formData = new FormData();
         formData.append('file', file);
         setUploadProgress(((i + 1) / selectedFiles.length) * 100);
-        const uploaded = await api<{ id: string; url: string }>(
+        const uploaded = await api<{ fileUrl: string; fileName: string; fileSize: number; mimeType: string }>(
           '/community/upload',
-          { method: 'POST', body: formData },
+          { 
+            method: 'POST', 
+            body: formData,
+            headers: {} 
+          },
           token,
         );
-        attachmentIds.push(uploaded.id);
+        
+        const attachmentPayload = {
+          id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36),
+          fileUrl: uploaded.fileUrl,
+          fileName: uploaded.fileName,
+          fileSize: uploaded.fileSize,
+          mimeType: uploaded.mimeType,
+        };
+        
+        attachmentIds.push(attachmentPayload.id);
       }
       const payload: { body: string; replyToMessageId?: string; attachmentIds?: string[] } = {
         body: draftMessage.trim() || 'Attachment',
@@ -587,6 +637,12 @@ export function CommunityContent() {
     }
   }
 
+  function handleReplyClick(message: CommunityMessage) {
+    if (message.replyPreview) {
+      setScrollToMessageId(message.replyPreview.id || '');
+    }
+  }
+
   const inputDisabled = !activeThreadId || sending || uploading;
 
   const layoutStyle = {
@@ -600,6 +656,15 @@ export function CommunityContent() {
 
   return (
     <main className="min-h-screen text-slate-900" style={layoutStyle}>
+      <style jsx>{`
+        @keyframes highlight {
+          0%, 100% { background-color: transparent; }
+          50% { background-color: rgba(74, 222, 128, 0.15); }
+        }
+        .highlight-message {
+          animation: highlight 2s ease;
+        }
+      `}</style>
       <TopNav />
       <div className="mx-auto w-full max-w-screen-2xl px-4 py-6">
         {error && (
@@ -622,8 +687,11 @@ export function CommunityContent() {
           />
 
           <section
-            className="flex min-h-[70vh] min-w-[520px] flex-1 flex-col rounded-3xl border border-slate-200 bg-white shadow-sm"
-            style={{ animation: 'soft-rise 0.5s ease both', animationDelay: '60ms' }}
+            className="flex min-h-[70vh] max-h-[80vh] w-full max-w-4xl min-w-[300px] flex-1 flex-col rounded-3xl border border-slate-200 bg-white shadow-sm"
+            style={{ 
+              animation: 'soft-rise 0.5s ease both', 
+              animationDelay: '60ms'
+            }}
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
               <div className="flex-1">
@@ -635,7 +703,9 @@ export function CommunityContent() {
                 {pinnedMessages.length > 0 && (
                   <button
                     onClick={() => setShowPinned(!showPinned)}
-                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-600 hover:bg-slate-100"
+                    className={cn("rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] text-slate-600 ",
+                      !showPinned ? "bg-slate-50 hover:bg-slate-100" : "bg-amber-100 hover:bg-amber-200"
+                    )}
                   >
                     📌 {pinnedMessages.length} pinned
                   </button>
@@ -660,7 +730,7 @@ export function CommunityContent() {
                       </div>
                       <button
                         onClick={() => handleUnpinMessage(pin.messageId)}
-                        className="text-xs text-slate-500 hover:text-red-600"
+                        className="rounded bg-amber-100 px-2 py-1 text-xs text-amber-700 hover:bg-amber-200"
                       >
                         Unpin
                       </button>
@@ -697,19 +767,36 @@ export function CommunityContent() {
               ) : (
                 messages.map((message) => {
                   const isSelf = message.senderId === user?.id;
-                  const sender = isSelf ? 'You' : message.senderName || 'Member';
+                  const sender = message.senderName || 'Member';
                   const isDeleted = message.isDeleted;
+                  const isDm = activeType === 'DM';
+                  
                   return (
-                    <div key={message.id} className="flex items-start gap-3">
+                    <div 
+                      key={message.id} 
+                      ref={(el) => {
+                        if (el) {
+                          messageRefs.current.set(message.id, el);
+                        } else {
+                          messageRefs.current.delete(message.id);
+                        }
+                      }}
+                      className={`flex items-start gap-3 ${isDm ? (isSelf ? 'flex-row-reverse' : 'flex-row') : 'flex-row'}`}
+                      onMouseEnter={() => setHoveredMessageId(message.id)}
+                      onMouseLeave={() => setHoveredMessageId(null)}
+                    >
                       <AvatarBubble name={sender} active={isSelf} />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
+                      <div className={`flex-1 ${isDm && isSelf ? 'flex flex-col items-end' : ''}`}>
+                        <div className={`flex items-center gap-2 ${isDm && isSelf ? 'flex-row-reverse' : ''}`}>
                           <div className="text-sm font-semibold text-slate-900">{sender}</div>
                           <div className="text-[11px] text-slate-500">{formatFullTime(message.createdAt)}</div>
                           {message.isEdited && <span className="text-[10px] text-slate-400">(edited)</span>}
                         </div>
                         {message.replyPreview && (
-                          <div className="mt-1 rounded-lg border-l-4 border-slate-300 bg-slate-100 px-3 py-2 text-xs text-slate-600">
+                          <div 
+                            onClick={() => handleReplyClick(message)}
+                            className={`mt-1 rounded-lg border-l-4 border-slate-300 bg-slate-100 px-3 py-2 text-xs text-slate-600 cursor-pointer hover:bg-slate-200 transition max-w-sm ${isDm && isSelf ? 'border-r-4 border-l-0' : ''}`}
+                          >
                             <div className="font-semibold">
                               {message.replyPreview.senderName || 'User'}
                             </div>
@@ -721,7 +808,9 @@ export function CommunityContent() {
                             e.preventDefault();
                             setContextMenu({ x: e.clientX, y: e.clientY, message });
                           }}
-                          className={`mt-1 rounded-2xl px-4 py-3 text-sm ${
+                          className={`mt-1 rounded-2xl px-4 py-3 text-sm transition max-w-sm ${
+                            hoveredMessageId === message.id ? 'ring-2 ring-slate-200' : ''
+                          } ${
                             isDeleted
                               ? 'bg-slate-200 italic text-slate-500'
                               : isSelf
@@ -732,11 +821,11 @@ export function CommunityContent() {
                           {isDeleted ? '[Message deleted]' : message.body}
                         </div>
                         {message.attachments && message.attachments.length > 0 && (
-                          <div className="mt-2 space-y-2">
+                          <div className={`mt-2 space-y-2 ${isDm && isSelf ? 'flex flex-col items-end' : ''}`}>
                             {message.attachments.map((att) => (
                               <div
                                 key={att.id}
-                                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2"
+                                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 max-w-sm"
                               >
                                 {att.mimeType.startsWith('image/') ? (
                                   <img
@@ -766,7 +855,7 @@ export function CommunityContent() {
                           </div>
                         )}
                         {message.reactions && message.reactions.length > 0 && (
-                          <div className="mt-2 flex flex-wrap gap-1">
+                          <div className={`mt-2 flex flex-wrap gap-1 ${isDm && isSelf ? 'justify-end' : ''}`}>
                             {message.reactions.map((reaction) => (
                               <button
                                 key={reaction.emoji}
@@ -782,20 +871,6 @@ export function CommunityContent() {
                             ))}
                           </div>
                         )}
-                        <div className="mt-1 flex items-center gap-2">
-                          <button
-                            onClick={() => handleReaction(message.id, '👍')}
-                            className="text-xs text-slate-500 hover:text-slate-700"
-                          >
-                            👍
-                          </button>
-                          <button
-                            onClick={() => setReplyingTo(message)}
-                            className="text-xs text-slate-500 hover:text-slate-700"
-                          >
-                            Reply
-                          </button>
-                        </div>
                       </div>
                     </div>
                   );
@@ -857,12 +932,34 @@ export function CommunityContent() {
                 </div>
               )}
               {selectedFiles.length > 0 && (
-                <div className="mb-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
-                  <div className="mb-1 text-xs font-semibold text-slate-700">
+                <div className="mb-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="mb-2 text-xs font-semibold text-slate-700">
                     {selectedFiles.length} file(s) selected
                   </div>
+                  <div className="flex gap-2 overflow-x-auto pb-2">
+                    {selectedFiles.map((file, idx) => (
+                      <div key={idx} className="relative flex-shrink-0">
+                        {file.type.startsWith('image/') && previewUrls[idx] ? (
+                          <img
+                            src={previewUrls[idx]}
+                            alt={file.name}
+                            className="h-20 w-20 rounded-lg object-cover border border-slate-200"
+                          />
+                        ) : (
+                          <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-slate-200 bg-white">
+                            <div className="text-center">
+                              <div className="text-2xl">📄</div>
+                              <div className="text-[9px] text-slate-500 truncate w-16 px-1">
+                                {file.name}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                   {uploading && (
-                    <div className="h-2 rounded-full bg-slate-200">
+                    <div className="mb-2 h-2 rounded-full bg-slate-200">
                       <div
                         className="h-2 rounded-full bg-blue-500 transition-all"
                         style={{ width: `${uploadProgress}%` }}
@@ -873,7 +970,7 @@ export function CommunityContent() {
                     onClick={() => setSelectedFiles([])}
                     className="mt-1 text-xs text-slate-600 hover:underline"
                   >
-                    Clear
+                    Clear all
                   </button>
                 </div>
               )}
@@ -911,9 +1008,13 @@ export function CommunityContent() {
                 <button
                   onClick={handleSendMessage}
                   disabled={inputDisabled || (!draftMessage.trim() && selectedFiles.length === 0)}
-                  className="rounded-2xl bg-[var(--community-accent)] px-4 py-3 text-xs font-semibold text-[var(--community-ink)] shadow-[0_10px_25px_-16px_rgba(74,222,128,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-2xl bg-[var(--community-accent)] px-4 py-3 text-xs font-semibold text-[var(--community-ink)] shadow-[0_10px_25px_-16px_rgba(74,222,128,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 min-w-[80px] flex items-center justify-center"
                 >
-                  {sending || uploading ? 'Sending...' : 'Send'}
+                  {sending || uploading ? (
+                    <span className="inline-block animate-spin">⏳</span>
+                  ) : (
+                    'Send'
+                  )}
                 </button>
               </div>
             </div>
@@ -993,18 +1094,17 @@ export function CommunityContent() {
           >
             Pin
           </button>
-          {(contextMenu.message.senderId === user?.id || user?.role === 'ADMIN') &&
-            !contextMenu.message.isDeleted && (
-              <button
-                onClick={() => {
-                  void handleDeleteMessage(contextMenu.message.id);
-                  setContextMenu(null);
-                }}
-                className="w-full rounded px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
-              >
-                Delete
-              </button>
-            )}
+          {contextMenu.message.senderId === user?.id && !contextMenu.message.isDeleted && (
+            <button
+              onClick={() => {
+                void handleDeleteMessage(contextMenu.message.id);
+                setContextMenu(null);
+              }}
+              className="w-full rounded px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
+            >
+              Delete
+            </button>
+          )}
         </div>
       )}
     </main>

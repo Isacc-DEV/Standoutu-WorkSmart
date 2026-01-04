@@ -1396,17 +1396,38 @@ export async function deleteMessage(messageId: string): Promise<boolean> {
 }
 
 // Pinned Messages
-export async function pinMessage(threadId: string, messageId: string, userId: string): Promise<PinnedMessage> {
+export async function pinMessage(threadId: string, messageId: string, userId: string): Promise<PinnedMessage | null> {
   const { rows } = await pool.query<PinnedMessage>(
     `
-      INSERT INTO community_pinned_messages (id, thread_id, message_id, pinned_by, pinned_at)
-      VALUES ($1, $2, $3, $4, NOW())
-      ON CONFLICT (thread_id, message_id) DO NOTHING
-      RETURNING id, thread_id AS "threadId", message_id AS "messageId", pinned_by AS "pinnedBy", pinned_at AS "pinnedAt"
+      WITH inserted AS (
+        INSERT INTO community_pinned_messages (id, thread_id, message_id, pinned_by, pinned_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (thread_id, message_id) DO NOTHING
+        RETURNING id, thread_id, message_id, pinned_by, pinned_at
+      )
+      SELECT 
+        inserted.id, 
+        inserted.thread_id AS "threadId", 
+        inserted.message_id AS "messageId", 
+        inserted.pinned_by AS "pinnedBy", 
+        inserted.pinned_at AS "pinnedAt",
+        jsonb_build_object(
+          'id', m.id,
+          'threadId', m.thread_id,
+          'senderId', m.sender_id,
+          'senderName', u.name,
+          'body', m.body,
+          'createdAt', m.created_at,
+          'isEdited', m.is_edited,
+          'isDeleted', m.is_deleted
+        ) as message
+      FROM inserted
+      JOIN community_messages m ON m.id = inserted.message_id
+      JOIN users u ON u.id = m.sender_id
     `,
     [randomUUID(), threadId, messageId, userId],
   );
-  return rows[0];
+  return rows[0] || null;
 }
 
 export async function unpinMessage(threadId: string, messageId: string): Promise<boolean> {
@@ -1420,10 +1441,27 @@ export async function unpinMessage(threadId: string, messageId: string): Promise
 export async function listPinnedMessages(threadId: string): Promise<PinnedMessage[]> {
   const { rows } = await pool.query<PinnedMessage>(
     `
-      SELECT id, thread_id AS "threadId", message_id AS "messageId", pinned_by AS "pinnedBy", pinned_at AS "pinnedAt"
-      FROM community_pinned_messages
-      WHERE thread_id = $1
-      ORDER BY pinned_at DESC
+      SELECT 
+        p.id, 
+        p.thread_id AS "threadId", 
+        p.message_id AS "messageId", 
+        p.pinned_by AS "pinnedBy", 
+        p.pinned_at AS "pinnedAt",
+        jsonb_build_object(
+          'id', m.id,
+          'threadId', m.thread_id,
+          'senderId', m.sender_id,
+          'senderName', u.name,
+          'body', m.body,
+          'createdAt', m.created_at,
+          'isEdited', m.is_edited,
+          'isDeleted', m.is_deleted
+        ) as message
+      FROM community_pinned_messages p
+      JOIN community_messages m ON m.id = p.message_id
+      JOIN users u ON u.id = m.sender_id
+      WHERE p.thread_id = $1
+      ORDER BY p.pinned_at DESC
     `,
     [threadId],
   );

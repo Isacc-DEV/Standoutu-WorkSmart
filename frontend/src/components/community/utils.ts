@@ -1,3 +1,10 @@
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
 export function sortChannels<T extends { name?: string | null }>(list: T[]) {
   return [...list].sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
 }
