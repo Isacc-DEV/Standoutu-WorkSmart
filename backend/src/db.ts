@@ -5,14 +5,21 @@ import {
   ApplicationSummary,
   Assignment,
   CommunityMessage,
+  CommunityMessageExtended,
   CommunityThread,
   CommunityThreadSummary,
   LabelAlias,
+  MessageAttachment,
+  MessageReaction,
+  PinnedMessage,
   Profile,
   ProfileAccount,
   ProfileAccountWithProfile,
+  ReactionSummary,
   Resume,
+  UnreadInfo,
   User,
+  UserPresence,
 } from './types';
 import {
   APPLICATION_SUCCESS_DEFAULTS,
@@ -147,6 +154,7 @@ export async function initDb() {
         thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
         user_id UUID REFERENCES users(id) ON DELETE CASCADE,
         role TEXT DEFAULT 'MEMBER',
+        permissions JSONB DEFAULT '{}'::jsonb,
         joined_at TIMESTAMP DEFAULT NOW(),
         UNIQUE (thread_id, user_id)
       );
@@ -156,6 +164,11 @@ export async function initDb() {
         thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
         sender_id UUID REFERENCES users(id),
         body TEXT NOT NULL,
+        reply_to_message_id UUID REFERENCES community_messages(id),
+        is_edited BOOLEAN DEFAULT FALSE,
+        edited_at TIMESTAMP,
+        is_deleted BOOLEAN DEFAULT FALSE,
+        deleted_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW()
       );
 
@@ -164,12 +177,77 @@ export async function initDb() {
         created_at TIMESTAMP DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS community_message_attachments (
+        id UUID PRIMARY KEY,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        file_name TEXT NOT NULL,
+        file_url TEXT NOT NULL,
+        file_size BIGINT NOT NULL,
+        mime_type TEXT NOT NULL,
+        thumbnail_url TEXT,
+        width INTEGER,
+        height INTEGER,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS community_message_reactions (
+        id UUID PRIMARY KEY,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        emoji TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (message_id, user_id, emoji)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_unread_messages (
+        id UUID PRIMARY KEY,
+        thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        last_read_message_id UUID REFERENCES community_messages(id),
+        unread_count INTEGER DEFAULT 0,
+        last_read_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (thread_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_channel_roles (
+        id UUID PRIMARY KEY,
+        channel_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        role_name TEXT NOT NULL,
+        permissions JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (channel_id, role_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_pinned_messages (
+        id UUID PRIMARY KEY,
+        thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        pinned_by UUID REFERENCES users(id),
+        pinned_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (thread_id, message_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_user_presence (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        status TEXT DEFAULT 'offline',
+        last_seen_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
       CREATE INDEX IF NOT EXISTS idx_profile_accounts_profile ON profile_accounts(profile_id);
       CREATE INDEX IF NOT EXISTS idx_applications_bidder ON applications(bidder_user_id);
       CREATE INDEX IF NOT EXISTS idx_applications_profile ON applications(profile_id);
       CREATE INDEX IF NOT EXISTS idx_community_members_thread ON community_thread_members(thread_id);
       CREATE INDEX IF NOT EXISTS idx_community_members_user ON community_thread_members(user_id);
       CREATE INDEX IF NOT EXISTS idx_community_messages_thread ON community_messages(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_community_messages_reply ON community_messages(reply_to_message_id);
+      CREATE INDEX IF NOT EXISTS idx_attachments_message ON community_message_attachments(message_id);
+      CREATE INDEX IF NOT EXISTS idx_reactions_message ON community_message_reactions(message_id);
+      CREATE INDEX IF NOT EXISTS idx_reactions_user ON community_message_reactions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_unread_user ON community_unread_messages(user_id);
+      CREATE INDEX IF NOT EXISTS idx_unread_thread ON community_unread_messages(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_pinned_thread ON community_pinned_messages(thread_id);
 
       -- Backfill schema changes at startup to avoid missing migration runs.
       ALTER TABLE IF EXISTS resumes
@@ -1061,9 +1139,14 @@ export async function insertCommunityMessage(message: CommunityMessage): Promise
   const { rows } = await pool.query<CommunityMessage>(
     `
       WITH inserted AS (
-        INSERT INTO community_messages (id, thread_id, sender_id, body, created_at)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, thread_id, sender_id, body, created_at
+        INSERT INTO community_messages (
+          id, thread_id, sender_id, body, reply_to_message_id, 
+          is_edited, is_deleted, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING 
+          id, thread_id, sender_id, body, reply_to_message_id,
+          is_edited, edited_at, is_deleted, deleted_at, created_at
       )
       SELECT
         inserted.id,
@@ -1071,15 +1154,316 @@ export async function insertCommunityMessage(message: CommunityMessage): Promise
         inserted.sender_id AS "senderId",
         u.name AS "senderName",
         inserted.body,
+        inserted.reply_to_message_id AS "replyToMessageId",
+        inserted.is_edited AS "isEdited",
+        inserted.edited_at AS "editedAt",
+        inserted.is_deleted AS "isDeleted",
+        inserted.deleted_at AS "deletedAt",
         inserted.created_at AS "createdAt"
       FROM inserted
       LEFT JOIN users u ON u.id = inserted.sender_id
     `,
-    [message.id, message.threadId, message.senderId, message.body, createdAt],
+    [
+      message.id, 
+      message.threadId, 
+      message.senderId, 
+      message.body, 
+      message.replyToMessageId ?? null,
+      message.isEdited ?? false,
+      message.isDeleted ?? false,
+      createdAt
+    ],
   );
   await pool.query('UPDATE community_threads SET last_message_at = $2 WHERE id = $1', [
     message.threadId,
     createdAt,
   ]);
   return rows[0];
+}
+
+// Message Attachments
+export async function insertMessageAttachment(attachment: MessageAttachment): Promise<MessageAttachment> {
+  const { rows } = await pool.query<MessageAttachment>(
+    `
+      INSERT INTO community_message_attachments 
+        (id, message_id, file_name, file_url, file_size, mime_type, thumbnail_url, width, height, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING 
+        id, message_id AS "messageId", file_name AS "fileName", file_url AS "fileUrl", 
+        file_size AS "fileSize", mime_type AS "mimeType", thumbnail_url AS "thumbnailUrl",
+        width, height, created_at AS "createdAt"
+    `,
+    [
+      attachment.id,
+      attachment.messageId,
+      attachment.fileName,
+      attachment.fileUrl,
+      attachment.fileSize,
+      attachment.mimeType,
+      attachment.thumbnailUrl ?? null,
+      attachment.width ?? null,
+      attachment.height ?? null,
+      attachment.createdAt ?? new Date().toISOString(),
+    ],
+  );
+  return rows[0];
+}
+
+export async function listMessageAttachments(messageId: string): Promise<MessageAttachment[]> {
+  const { rows } = await pool.query<MessageAttachment>(
+    `
+      SELECT 
+        id, message_id AS "messageId", file_name AS "fileName", file_url AS "fileUrl",
+        file_size AS "fileSize", mime_type AS "mimeType", thumbnail_url AS "thumbnailUrl",
+        width, height, created_at AS "createdAt"
+      FROM community_message_attachments
+      WHERE message_id = $1
+      ORDER BY created_at ASC
+    `,
+    [messageId],
+  );
+  return rows;
+}
+
+// Message Reactions
+export async function addMessageReaction(reaction: MessageReaction): Promise<MessageReaction> {
+  const { rows } = await pool.query<MessageReaction>(
+    `
+      INSERT INTO community_message_reactions (id, message_id, user_id, emoji, created_at)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (message_id, user_id, emoji) DO NOTHING
+      RETURNING 
+        id, message_id AS "messageId", user_id AS "userId", emoji, created_at AS "createdAt"
+    `,
+    [reaction.id, reaction.messageId, reaction.userId, reaction.emoji, reaction.createdAt ?? new Date().toISOString()],
+  );
+  return rows[0];
+}
+
+export async function removeMessageReaction(messageId: string, userId: string, emoji: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    'DELETE FROM community_message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3',
+    [messageId, userId, emoji],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function listMessageReactions(messageId: string, currentUserId?: string): Promise<ReactionSummary[]> {
+  const { rows } = await pool.query<{ emoji: string; count: number; userIds: string[] }>(
+    `
+      SELECT emoji, COUNT(*)::int AS count, ARRAY_AGG(user_id) AS "userIds"
+      FROM community_message_reactions
+      WHERE message_id = $1
+      GROUP BY emoji
+      ORDER BY count DESC, emoji
+    `,
+    [messageId],
+  );
+  return rows.map((row) => ({
+    emoji: row.emoji,
+    count: row.count,
+    userIds: row.userIds,
+    hasCurrentUser: currentUserId ? row.userIds.includes(currentUserId) : false,
+  }));
+}
+
+// Unread Messages
+export async function getUnreadInfo(threadId: string, userId: string): Promise<UnreadInfo | null> {
+  const { rows } = await pool.query<UnreadInfo>(
+    `
+      SELECT 
+        thread_id AS "threadId", 
+        unread_count AS "unreadCount", 
+        last_read_message_id AS "lastReadMessageId",
+        last_read_at AS "lastReadAt"
+      FROM community_unread_messages
+      WHERE thread_id = $1 AND user_id = $2
+    `,
+    [threadId, userId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function markThreadAsRead(threadId: string, userId: string, messageId?: string): Promise<void> {
+  await pool.query(
+    `
+      INSERT INTO community_unread_messages (id, thread_id, user_id, last_read_message_id, unread_count, last_read_at, updated_at)
+      VALUES ($1, $2, $3, $4, 0, NOW(), NOW())
+      ON CONFLICT (thread_id, user_id) 
+      DO UPDATE SET 
+        last_read_message_id = COALESCE($4, community_unread_messages.last_read_message_id),
+        unread_count = 0, 
+        last_read_at = NOW(), 
+        updated_at = NOW()
+    `,
+    [randomUUID(), threadId, userId, messageId ?? null],
+  );
+}
+
+export async function incrementUnreadCount(threadId: string, excludeUserId: string): Promise<void> {
+  await pool.query(
+    `
+      INSERT INTO community_unread_messages (id, thread_id, user_id, unread_count, updated_at)
+      SELECT $1, $2, user_id, 1, NOW()
+      FROM community_thread_members
+      WHERE thread_id = $2 AND user_id != $3
+      ON CONFLICT (thread_id, user_id)
+      DO UPDATE SET unread_count = community_unread_messages.unread_count + 1, updated_at = NOW()
+    `,
+    [randomUUID(), threadId, excludeUserId],
+  );
+}
+
+// Pagination support for messages
+export async function listCommunityMessagesWithPagination(
+  threadId: string,
+  options: { limit?: number; before?: string; after?: string } = {},
+): Promise<CommunityMessageExtended[]> {
+  const limit = options.limit ?? 50;
+  let query = `
+    SELECT 
+      m.id, m.thread_id AS "threadId", m.sender_id AS "senderId", 
+      u.name AS "senderName", m.body, m.reply_to_message_id AS "replyToMessageId",
+      m.is_edited AS "isEdited", m.edited_at AS "editedAt",
+      m.is_deleted AS "isDeleted", m.deleted_at AS "deletedAt",
+      m.created_at AS "createdAt"
+    FROM community_messages m
+    LEFT JOIN users u ON u.id = m.sender_id
+    WHERE m.thread_id = $1
+  `;
+  const params: any[] = [threadId];
+  
+  if (options.before) {
+    query += ` AND m.created_at < (SELECT created_at FROM community_messages WHERE id = $2)`;
+    params.push(options.before);
+  } else if (options.after) {
+    query += ` AND m.created_at > (SELECT created_at FROM community_messages WHERE id = $2)`;
+    params.push(options.after);
+  }
+  
+  query += ` ORDER BY m.created_at DESC LIMIT $${params.length + 1}`;
+  params.push(limit);
+  
+  const { rows } = await pool.query<CommunityMessageExtended>(query, params);
+  return rows.reverse();
+}
+
+export async function getMessageById(messageId: string): Promise<CommunityMessage | null> {
+  const { rows } = await pool.query<CommunityMessage>(
+    `
+      SELECT 
+        m.id, m.thread_id AS "threadId", m.sender_id AS "senderId",
+        u.name AS "senderName", m.body, m.reply_to_message_id AS "replyToMessageId",
+        m.is_edited AS "isEdited", m.edited_at AS "editedAt",
+        m.is_deleted AS "isDeleted", m.deleted_at AS "deletedAt",
+        m.created_at AS "createdAt"
+      FROM community_messages m
+      LEFT JOIN users u ON u.id = m.sender_id
+      WHERE m.id = $1
+    `,
+    [messageId],
+  );
+  return rows[0] ?? null;
+}
+
+// Edit and Delete messages
+export async function editMessage(messageId: string, body: string): Promise<CommunityMessage | null> {
+  const { rows } = await pool.query<CommunityMessage>(
+    `
+      UPDATE community_messages 
+      SET body = $2, is_edited = TRUE, edited_at = NOW()
+      WHERE id = $1
+      RETURNING 
+        id, thread_id AS "threadId", sender_id AS "senderId", body,
+        reply_to_message_id AS "replyToMessageId", is_edited AS "isEdited", edited_at AS "editedAt",
+        is_deleted AS "isDeleted", deleted_at AS "deletedAt", created_at AS "createdAt"
+    `,
+    [messageId, body],
+  );
+  return rows[0] ?? null;
+}
+
+export async function deleteMessage(messageId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `
+      UPDATE community_messages 
+      SET is_deleted = TRUE, deleted_at = NOW(), body = '[deleted]'
+      WHERE id = $1
+    `,
+    [messageId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+// Pinned Messages
+export async function pinMessage(threadId: string, messageId: string, userId: string): Promise<PinnedMessage> {
+  const { rows } = await pool.query<PinnedMessage>(
+    `
+      INSERT INTO community_pinned_messages (id, thread_id, message_id, pinned_by, pinned_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (thread_id, message_id) DO NOTHING
+      RETURNING id, thread_id AS "threadId", message_id AS "messageId", pinned_by AS "pinnedBy", pinned_at AS "pinnedAt"
+    `,
+    [randomUUID(), threadId, messageId, userId],
+  );
+  return rows[0];
+}
+
+export async function unpinMessage(threadId: string, messageId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    'DELETE FROM community_pinned_messages WHERE thread_id = $1 AND message_id = $2',
+    [threadId, messageId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function listPinnedMessages(threadId: string): Promise<PinnedMessage[]> {
+  const { rows } = await pool.query<PinnedMessage>(
+    `
+      SELECT id, thread_id AS "threadId", message_id AS "messageId", pinned_by AS "pinnedBy", pinned_at AS "pinnedAt"
+      FROM community_pinned_messages
+      WHERE thread_id = $1
+      ORDER BY pinned_at DESC
+    `,
+    [threadId],
+  );
+  return rows;
+}
+
+// User Presence
+export async function updateUserPresence(userId: string, status: 'online' | 'away' | 'busy' | 'offline'): Promise<void> {
+  await pool.query(
+    `
+      INSERT INTO community_user_presence (user_id, status, last_seen_at, updated_at)
+      VALUES ($1, $2, NOW(), NOW())
+      ON CONFLICT (user_id) 
+      DO UPDATE SET status = $2, last_seen_at = NOW(), updated_at = NOW()
+    `,
+    [userId, status],
+  );
+}
+
+export async function getUserPresence(userId: string): Promise<UserPresence | null> {
+  const { rows } = await pool.query<UserPresence>(
+    `
+      SELECT user_id AS "userId", status, last_seen_at AS "lastSeenAt"
+      FROM community_user_presence
+      WHERE user_id = $1
+    `,
+    [userId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function listUserPresences(userIds: string[]): Promise<UserPresence[]> {
+  if (userIds.length === 0) return [];
+  const { rows } = await pool.query<UserPresence>(
+    `
+      SELECT user_id AS "userId", status, last_seen_at AS "lastSeenAt"
+      FROM community_user_presence
+      WHERE user_id = ANY($1)
+    `,
+    [userIds],
+  );
+  return rows;
 }
