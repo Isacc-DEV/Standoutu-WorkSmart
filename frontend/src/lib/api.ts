@@ -15,7 +15,9 @@ export async function api<T = unknown>(
     ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     ...(init?.headers as Record<string, string> | undefined),
   };
-  if (init?.body && !mergedHeaders['Content-Type']) {
+  
+  // Don't set Content-Type for FormData - browser will set it with boundary
+  if (init?.body && !(init.body instanceof FormData) && !mergedHeaders['Content-Type']) {
     mergedHeaders['Content-Type'] = 'application/json';
   }
 
