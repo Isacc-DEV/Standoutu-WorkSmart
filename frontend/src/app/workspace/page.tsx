@@ -171,9 +171,8 @@ export default function Page() {
   const [useLlmAutofill, setUseLlmAutofill] = useState(false);
   const [session, setSession] = useState<ApplicationSession | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [recommended, setRecommended] = useState<AnalyzeResult | null>(null);
-  const [applicationPhrases, setApplicationPhrases] = useState<string[]>([]);
-  const [checkEnabled, setCheckEnabled] = useState(false);
+  const [fillPlan, setFillPlan] = useState<FillPlan | null>(null);
+  const [capturedFields, setCapturedFields] = useState<PageFieldCandidate[]>([]);
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [streamFrame, setStreamFrame] = useState<string>("");
   const [status, setStatus] = useState<string>("Disconnected");
@@ -296,7 +295,8 @@ export default function Page() {
     if (!selectedProfileId || !user) return;
     void loadResumes(selectedProfileId);
     setSession(null);
-    setRecommended(null);
+    setFillPlan(null);
+    setCapturedFields([]);
     setStreamFrame("");
     setStreamConnected(false);
     setCheckEnabled(false);
@@ -825,7 +825,6 @@ export default function Page() {
         body: JSON.stringify({ useAi: useAiAnalyze }),
       });
       const result = res as AnalyzeResult;
-      setRecommended(result);
       const mode = result.mode ?? (useAiAnalyze ? "resume" : "tech");
 
       if (mode === "tech") {
@@ -1126,7 +1125,7 @@ export default function Page() {
                 ) : browserSrc ? (
                   isElectron ? (
                     <div className="relative h-full w-full">
-                      {/* @ts-ignore Electron webview not in TS DOM lib */}
+                      {/* @ts-expect-error Electron webview not in TS DOM lib */}
                       <webview
                         ref={webviewRef as unknown as React.Ref<HTMLWebViewElement>}
                         key={browserSrc}
@@ -1506,11 +1505,6 @@ function cleanBaseInfo(base: BaseInfo): BaseInfo {
     preferences: base?.preferences ?? {},
     defaultAnswers: base?.defaultAnswers ?? {},
   };
-}
-
-function buildBaseInfoPayload(base: BaseInfo): BaseInfo {
-  const cleaned = cleanBaseInfo(base);
-  return { ...cleaned, contact: { ...cleaned.contact, phone: formatPhone(cleaned.contact) } };
 }
 
 function formatScore(score?: number) {

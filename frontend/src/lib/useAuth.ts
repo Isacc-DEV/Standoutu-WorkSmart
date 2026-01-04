@@ -1,24 +1,22 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { clearAuth, ClientUser, readAuth } from './auth';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { clearAuth, getAuthSnapshot, notifyAuthChange, subscribeAuth } from './auth';
 
 export function useAuth() {
-  const [user, setUser] = useState<ClientUser | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, () => null);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    const stored = readAuth();
-    setUser(stored?.user ?? null);
-    setToken(stored?.token ?? null);
-    setLoading(false);
+    setHydrated(true);
   }, []);
 
+  const user = hydrated ? auth?.user ?? null : null;
+  const token = hydrated ? auth?.token ?? null : null;
+  const loading = !hydrated;
+
   const refresh = () => {
-    const stored = readAuth();
-    setUser(stored?.user ?? null);
-    setToken(stored?.token ?? null);
+    notifyAuthChange();
   };
 
   const signOut = () => {

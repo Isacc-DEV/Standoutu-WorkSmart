@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
+import { randomUUID } from 'crypto';
 import {
   ApplicationRecord,
   ApplicationSummary,
@@ -26,6 +27,28 @@ import {
   APPLICATION_SUCCESS_KEY,
   normalizeLabelAlias,
 } from './labelAliases';
+
+type CalendarEventInput = {
+  id: string;
+  mailbox: string;
+  title?: string;
+  start: string;
+  end: string;
+  isAllDay?: boolean;
+  organizer?: string;
+  location?: string;
+};
+
+type StoredCalendarEvent = {
+  id: string;
+  mailbox: string;
+  title: string;
+  start: string;
+  end: string;
+  isAllDay?: boolean;
+  organizer?: string;
+  location?: string;
+};
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -262,6 +285,27 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_unread_user ON community_unread_messages(user_id);
       CREATE INDEX IF NOT EXISTS idx_unread_thread ON community_unread_messages(thread_id);
       CREATE INDEX IF NOT EXISTS idx_pinned_thread ON community_pinned_messages(thread_id);
+
+      CREATE TABLE IF NOT EXISTS calendar_events (
+        id UUID PRIMARY KEY,
+        owner_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        mailbox TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'MICROSOFT',
+        provider_event_id TEXT NOT NULL,
+        title TEXT,
+        start_at TEXT NOT NULL,
+        end_at TEXT NOT NULL,
+        is_all_day BOOLEAN DEFAULT FALSE,
+        organizer TEXT,
+        location TEXT,
+        timezone TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (owner_user_id, provider_event_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_mailbox ON calendar_events(owner_user_id, mailbox);
+      CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_start ON calendar_events(owner_user_id, start_at);
 
       -- Backfill schema changes at startup to avoid missing migration runs.
       ALTER TABLE IF EXISTS resumes
@@ -606,6 +650,114 @@ export async function touchProfileAccount(id: string, lastSyncAt?: string) {
     `,
     [id, lastSyncAt ?? new Date().toISOString()],
   );
+}
+
+
+export async function listCalendarEventsForOwner(
+  ownerUserId: string,
+  mailboxes?: string[],
+  range?: { start?: string | null; end?: string | null },
+): Promise<StoredCalendarEvent[]> {
+  const { rows } = await pool.query<StoredCalendarEvent>(
+    `
+      SELECT
+        provider_event_id AS id,
+        mailbox,
+        title,
+        start_at AS "start",
+        end_at AS "end",
+        is_all_day AS "isAllDay",
+        organizer,
+        location
+      FROM calendar_events
+      WHERE owner_user_id = $1
+        AND ($2::text[] IS NULL OR mailbox = ANY($2))
+        AND ($3::text IS NULL OR end_at >= $3)
+        AND ($4::text IS NULL OR start_at <= $4)
+      ORDER BY start_at ASC
+    `,
+    [
+      ownerUserId,
+      mailboxes && mailboxes.length ? mailboxes : null,
+      range?.start ?? null,
+      range?.end ?? null,
+    ],
+  );
+  return rows;
+}
+
+export async function replaceCalendarEvents(params: {
+  ownerUserId: string;
+  mailboxes: string[];
+  timezone?: string | null;
+  events: CalendarEventInput[];
+}): Promise<StoredCalendarEvent[]> {
+  const { ownerUserId, mailboxes, timezone, events } = params;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (mailboxes.length) {
+      await client.query(
+        'DELETE FROM calendar_events WHERE owner_user_id = $1 AND mailbox = ANY($2)',
+        [ownerUserId, mailboxes],
+      );
+    }
+    if (events.length) {
+      const values: string[] = [];
+      const args: Array<string | boolean | null> = [];
+      let idx = 1;
+      for (const event of events) {
+        if (!event.mailbox) continue;
+        values.push(
+          `($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`,
+        );
+        args.push(
+          randomUUID(),
+          ownerUserId,
+          event.mailbox,
+          'MICROSOFT',
+          event.id,
+          event.title ?? null,
+          event.start,
+          event.end,
+          event.isAllDay ?? false,
+          event.organizer ?? null,
+          event.location ?? null,
+          timezone ?? null,
+        );
+      }
+      if (values.length) {
+        await client.query(
+          `
+            INSERT INTO calendar_events (
+              id,
+              owner_user_id,
+              mailbox,
+              provider,
+              provider_event_id,
+              title,
+              start_at,
+              end_at,
+              is_all_day,
+              organizer,
+              location,
+              timezone
+            )
+            VALUES ${values.join(', ')}
+          `,
+          args,
+        );
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  return listCalendarEventsForOwner(ownerUserId, mailboxes);
 }
 
 export async function updateProfileRecord(profile: {

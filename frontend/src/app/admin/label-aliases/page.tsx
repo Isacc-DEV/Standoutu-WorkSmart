@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "../../../lib/api";
 import { useAuth } from "../../../lib/useAuth";
@@ -23,7 +23,10 @@ type TagRow = {
   id?: string;
 };
 
-const APPLICATION_SUCCESS_KEY = "application_success";
+const getErrorMessage = (err: unknown, fallback: string) => {
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+};
 
 export default function LabelAliasesPage() {
   const router = useRouter();
@@ -40,6 +43,27 @@ export default function LabelAliasesPage() {
   const [editKey, setEditKey] = useState("");
   const rightInputRef = useRef<HTMLInputElement | null>(null);
 
+  const loadAliases = useCallback(async (authToken: string) => {
+    try {
+      const data = await api<AliasResponse>("/label-aliases", undefined, authToken);
+      const nextDefaults = data.defaults || {};
+      const nextCustom = data.custom || [];
+      setDefaults(nextDefaults);
+      setCustom(nextCustom);
+      setSelectedKey((current) => {
+        if (current) return current;
+        const allKeys = new Set<string>([
+          ...Object.keys(nextDefaults),
+          ...nextCustom.map((c) => c.canonicalKey),
+        ]);
+        return Array.from(allKeys)[0] || "";
+      });
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load label tags.");
+    }
+  }, []);
+
   useEffect(() => {
     if (loading) return;
     if (!user || !token) {
@@ -51,7 +75,7 @@ export default function LabelAliasesPage() {
       return;
     }
     void loadAliases(token);
-  }, [loading, user, token, router]);
+  }, [loading, user, token, router, loadAliases]);
 
   const canonicalKeys = useMemo(() => {
     const set = new Set<string>();
@@ -61,37 +85,6 @@ export default function LabelAliasesPage() {
       .filter((key) => key !== APPLICATION_SUCCESS_KEY)
       .sort();
   }, [defaults, custom]);
-
-  async function loadAliases(authToken: string) {
-    try {
-      const data = await api<AliasResponse>("/label-aliases", undefined, authToken);
-      const nextDefaults = data.defaults || {};
-      const nextCustom = data.custom || [];
-      setDefaults(nextDefaults);
-      setCustom(nextCustom);
-      if (!selectedKey) {
-        const allKeys = new Set<string>(
-          [...Object.keys(nextDefaults), ...nextCustom.map((c) => c.canonicalKey)].filter(
-            (key) => key !== APPLICATION_SUCCESS_KEY
-          )
-        );
-        const firstKey = Array.from(allKeys)[0] || "";
-        setSelectedKey(firstKey);
-      } else if (selectedKey === APPLICATION_SUCCESS_KEY) {
-        const fallback = Array.from(
-          new Set<string>(
-            [...Object.keys(nextDefaults), ...nextCustom.map((c) => c.canonicalKey)].filter(
-              (key) => key !== APPLICATION_SUCCESS_KEY
-            )
-          )
-        )[0];
-        setSelectedKey(fallback ?? "");
-      }
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load label tags.");
-    }
-  }
 
   const tagsForSelected: TagRow[] = useMemo(() => {
     if (!selectedKey) return [];
@@ -116,18 +109,12 @@ export default function LabelAliasesPage() {
       setNewAliasLeft("");
       setNewAliasRight("");
       await loadAliases(token!);
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setError(err?.message || "Unable to add tag.");
+      setError(getErrorMessage(err, "Unable to add tag."));
     } finally {
       setSavingId(null);
     }
-  }
-
-  function startEdit(alias: LabelAlias) {
-    setEditingId(alias.id);
-    setEditAlias(alias.alias);
-    setEditKey(alias.canonicalKey);
   }
 
   function cancelEdit() {
@@ -144,9 +131,9 @@ export default function LabelAliasesPage() {
       await api(`/label-aliases/${id}`, { method: "PATCH", body: JSON.stringify({ canonicalKey: editKey, alias: editAlias }) }, token);
       cancelEdit();
       await loadAliases(token);
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setError(err?.message || "Unable to save tag.");
+      setError(getErrorMessage(err, "Unable to save tag."));
     } finally {
       setSavingId(null);
     }
@@ -160,9 +147,9 @@ export default function LabelAliasesPage() {
       await api(`/label-aliases/${id}`, { method: "DELETE" }, token);
       if (editingId === id) cancelEdit();
       await loadAliases(token);
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setError(err?.message || "Unable to delete tag.");
+      setError(getErrorMessage(err, "Unable to delete tag."));
     } finally {
       setSavingId(null);
     }

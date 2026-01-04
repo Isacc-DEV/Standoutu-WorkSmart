@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { ClientUser, clearAuth, readAuth } from '../lib/auth';
+import { clearAuth } from '../lib/auth';
+import { useAuth } from '../lib/useAuth';
 
 function NavItem({
   href,
@@ -25,16 +25,10 @@ function NavItem({
     </Link>
   );
 }
-
 export default function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
-  const [user, setUser] = useState<ClientUser | null>(null);
-
-  useEffect(() => {
-    const stored = readAuth();
-    setUser(stored?.user ?? null);
-  }, [pathname]);
+  const { user } = useAuth();
 
   const signOut = () => {
     clearAuth();

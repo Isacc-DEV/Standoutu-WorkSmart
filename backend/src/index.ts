@@ -51,7 +51,14 @@ import {
   getMessageById,
   incrementUnreadCount,
   initDb,
-  insertApplication,
+  insertProfile,
+  findProfileAccountById,
+  listProfileAccountsForUser,
+  upsertProfileAccount,
+  touchProfileAccount,
+  replaceCalendarEvents,
+  listCalendarEventsForOwner,
+  insertLabelAlias,
   insertAssignmentRecord,
   insertCommunityMessage,
   insertCommunityThread,
@@ -1805,11 +1812,89 @@ async function bootstrap() {
     return account;
   });
 
-  app.get("/calendar/events", async (request, reply) => {
-    if (forbidObserver(reply, request.authUser)) return;
-    const actor = request.authUser;
-    if (!actor) {
-      return reply.status(401).send({ message: "Unauthorized" });
+
+    app.post('/calendar/events/sync', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
+      }
+    const schema = z.object({
+      mailboxes: z.array(z.string().email()).default([]),
+      timezone: z.string().min(2).optional(),
+      events: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            title: z.string().optional(),
+            start: z.string().min(1),
+            end: z.string().min(1),
+            isAllDay: z.boolean().optional(),
+            organizer: z.string().optional(),
+            location: z.string().optional(),
+            mailbox: z.string().email(),
+          }),
+        )
+        .default([]),
+    });
+    const body = schema.parse(request.body ?? {});
+    const mailboxes = body.mailboxes.map((mailbox) => mailbox.toLowerCase());
+    const events = body.events.map((event) => ({
+      ...event,
+      mailbox: event.mailbox.toLowerCase(),
+    }));
+      const storedEvents = await replaceCalendarEvents({
+        ownerUserId: actor.id,
+        mailboxes,
+        timezone: body.timezone ?? null,
+        events,
+      });
+      return { events: storedEvents };
+    });
+
+    app.get('/calendar/events/stored', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
+      }
+      const parsed = z
+        .object({
+          start: z.string().optional(),
+          end: z.string().optional(),
+          mailboxes: z.string().optional(),
+        })
+        .safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: 'Invalid query' });
+      }
+      const mailboxes = parsed.data.mailboxes
+        ? parsed.data.mailboxes
+            .split(',')
+            .map((mailbox) => mailbox.trim().toLowerCase())
+            .filter(Boolean)
+        : [];
+      let ownerUserId = actor.id;
+      if (actor.role !== 'ADMIN') {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM users WHERE role = 'ADMIN' ORDER BY created_at ASC LIMIT 1",
+        );
+        if (rows[0]?.id) {
+          ownerUserId = rows[0].id;
+        }
+      }
+      const events = await listCalendarEventsForOwner(ownerUserId, mailboxes, {
+        start: parsed.data.start ?? null,
+        end: parsed.data.end ?? null,
+      });
+      return { events };
+    });
+
+    app.get('/calendar/events', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
     }
     const parsed = z
       .object({

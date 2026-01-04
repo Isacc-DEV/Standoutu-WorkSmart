@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { api, API_BASE } from "../../../lib/api";
 import { useAuth } from "../../../lib/useAuth";
@@ -54,6 +54,14 @@ type User = {
 
 type SectionKey = "contact" | "location" | "career" | "education" | "workAuth";
 
+const DEFAULT_SECTION_STATE = {
+  contact: { show: false, edit: false },
+  location: { show: false, edit: false },
+  career: { show: false, edit: false },
+  education: { show: false, edit: false },
+  workAuth: { show: false, edit: false },
+};
+
 const srOnly = "absolute -m-px h-px w-px overflow-hidden whitespace-nowrap border-0 p-0";
 
 export default function ManagerProfilesPage() {
@@ -71,6 +79,7 @@ export default function ManagerProfilesPage() {
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [viewResume, setViewResume] = useState<Resume | null>(null);
   const [viewUrl, setViewUrl] = useState<string>("");
+  const viewUrlRef = useRef<string>("");
   const [viewError, setViewError] = useState<string>("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -82,14 +91,7 @@ export default function ManagerProfilesPage() {
   const [assignBidderId, setAssignBidderId] = useState<string>("");
   const [createLoading, setCreateLoading] = useState(false);
   const [createForm, setCreateForm] = useState(getEmptyCreateForm());
-  const defaultSectionState = {
-    contact: { show: false, edit: false },
-    location: { show: false, edit: false },
-    career: { show: false, edit: false },
-    education: { show: false, edit: false },
-    workAuth: { show: false, edit: false },
-  };
-  const [sectionState, setSectionState] = useState(defaultSectionState);
+  const [sectionState, setSectionState] = useState(DEFAULT_SECTION_STATE);
   const toggleSection = (key: SectionKey, field: "show" | "edit") => {
     setSectionState((prev) => ({
       ...prev,
@@ -157,6 +159,54 @@ export default function ManagerProfilesPage() {
     [assignments, selectedId],
   );
 
+  const loadProfiles = useCallback(async (authToken: string) => {
+    try {
+      const list = await api<Profile[]>("/profiles", undefined, authToken);
+      setProfiles(list);
+      setSelectedId("");
+      setDetailOpen(false);
+      setAddOpen(false);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load profiles.");
+    }
+  }, []);
+
+  const loadResumes = useCallback(async (profileId: string, authToken: string) => {
+    try {
+      const list = await api<Resume[]>(`/profiles/${profileId}/resumes`, undefined, authToken);
+      setResumes(list);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load resumes.");
+    }
+  }, []);
+
+  const loadAssignments = useCallback(async (authToken: string) => {
+    try {
+      const list = await api<Assignment[]>("/assignments", undefined, authToken);
+      setAssignments(list);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load assignments.");
+    }
+  }, []);
+
+  const loadBidders = useCallback(async (authToken: string) => {
+    try {
+      const list = await api<User[]>("/users", undefined, authToken);
+      const filtered = list.filter((u) => u.role === "BIDDER" && u.isActive !== false);
+      setBidders(filtered);
+      const fallbackId = filtered[0]?.id;
+      if (fallbackId) {
+        setAssignBidderId((current) => current || fallbackId);
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load bidders.");
+    }
+  }, []);
+
   useEffect(() => {
     if (loading) return;
     if (!user || !token) {
@@ -170,65 +220,20 @@ export default function ManagerProfilesPage() {
     void loadProfiles(token);
     void loadBidders(token);
     void loadAssignments(token);
-  }, [loading, user, token, router]);
+  }, [loading, user, token, router, loadProfiles, loadBidders, loadAssignments]);
 
   useEffect(() => {
     if (!selectedProfile || !token) return;
     setDraftBase(cleanBaseInfo(selectedProfile.baseInfo));
     void loadResumes(selectedProfile.id, token);
-    setSectionState(defaultSectionState);
+    setSectionState(DEFAULT_SECTION_STATE);
     setShowResumes(false);
     if (activeAssignment) {
       setAssignBidderId(activeAssignment.bidderUserId);
     } else if (bidders[0]) {
       setAssignBidderId(bidders[0].id);
     }
-  }, [selectedProfile, token]);
-
-  async function loadProfiles(authToken: string) {
-    try {
-      const list = await api<Profile[]>("/profiles", undefined, authToken);
-      setProfiles(list);
-      setSelectedId("");
-      setDetailOpen(false);
-      setAddOpen(false);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load profiles.");
-    }
-  }
-
-  async function loadResumes(profileId: string, authToken: string) {
-    try {
-      const list = await api<Resume[]>(`/profiles/${profileId}/resumes`, undefined, authToken);
-      setResumes(list);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load resumes.");
-    }
-  }
-
-  async function loadAssignments(authToken: string) {
-    try {
-      const list = await api<Assignment[]>("/assignments", undefined, authToken);
-      setAssignments(list);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load assignments.");
-    }
-  }
-
-  async function loadBidders(authToken: string) {
-    try {
-      const list = await api<User[]>("/users", undefined, authToken);
-      const filtered = list.filter((u) => u.role === "BIDDER" && u.isActive !== false);
-      setBidders(filtered);
-      if (!assignBidderId && filtered[0]) setAssignBidderId(filtered[0].id);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load bidders.");
-    }
-  }
+  }, [activeAssignment, bidders, loadResumes, selectedProfile, token]);
 
   async function handleSaveProfile(sectionKey?: SectionKey) {
     if (!selectedProfile || !token) return;
@@ -301,14 +306,14 @@ export default function ManagerProfilesPage() {
 
   useEffect(() => {
     if (!viewResume || !token) {
-      if (viewUrl) {
-        URL.revokeObjectURL(viewUrl);
-        setViewUrl("");
+      if (viewUrlRef.current) {
+        URL.revokeObjectURL(viewUrlRef.current);
+        viewUrlRef.current = "";
       }
+      setViewUrl("");
       setViewError("");
       return;
     }
-    let revokeUrl = "";
     let cancelled = false;
     const load = async () => {
       try {
@@ -327,7 +332,10 @@ export default function ManagerProfilesPage() {
           URL.revokeObjectURL(url);
           return;
         }
-        revokeUrl = url;
+        if (viewUrlRef.current) {
+          URL.revokeObjectURL(viewUrlRef.current);
+        }
+        viewUrlRef.current = url;
         setViewUrl(url);
       } catch (err) {
         console.error(err);
@@ -337,7 +345,10 @@ export default function ManagerProfilesPage() {
     void load();
     return () => {
       cancelled = true;
-      if (revokeUrl) URL.revokeObjectURL(revokeUrl);
+      if (viewUrlRef.current) {
+        URL.revokeObjectURL(viewUrlRef.current);
+        viewUrlRef.current = "";
+      }
     };
   }, [viewResume, token]);
 
@@ -388,7 +399,7 @@ export default function ManagerProfilesPage() {
                   onClick={() => {
                     setSelectedId(p.id);
                     setDetailOpen(true);
-                    setSectionState(defaultSectionState);
+                    setSectionState(DEFAULT_SECTION_STATE);
                     setShowResumes(false);
                   }}
                   className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
@@ -1012,7 +1023,7 @@ export default function ManagerProfilesPage() {
               className="fixed inset-0 z-30 bg-black/30"
               onClick={() => {
                 setDetailOpen(false);
-                setSectionState(defaultSectionState);
+                setSectionState(DEFAULT_SECTION_STATE);
               }}
             />
           )}
@@ -1027,11 +1038,30 @@ export default function ManagerProfilesPage() {
     </ManagerShell>
   );
 
+  function parseAssignError(err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!message) return { message: "Failed to assign profile." };
+    try {
+      const parsed = JSON.parse(message) as { message?: string; assignmentId?: string };
+      if (parsed?.message) return { message: parsed.message, assignmentId: parsed.assignmentId };
+    } catch {
+      // Non-JSON error text.
+    }
+    return { message };
+  }
+
   async function handleAssign() {
     if (!selectedProfile || !assignBidderId || !token || !user) return;
+    if (activeAssignment && activeAssignment.bidderUserId === assignBidderId) {
+      setError("This profile is already assigned to the selected bidder.");
+      return;
+    }
     setAssignLoading(true);
     setError("");
     try {
+      if (activeAssignment && activeAssignment.bidderUserId !== assignBidderId) {
+        await api(`/assignments/${activeAssignment.id}/unassign`, { method: "POST", body: "{}" }, token);
+      }
       await api(
         "/assignments",
         {
@@ -1047,7 +1077,13 @@ export default function ManagerProfilesPage() {
       await loadAssignments(token);
     } catch (err) {
       console.error(err);
-      setError("Failed to assign profile.");
+      const parsed = parseAssignError(err);
+      if (parsed.message === "Profile already assigned") {
+        await loadAssignments(token);
+        setError("Profile already assigned. Use Unassign to change the bidder.");
+      } else {
+        setError(parsed.message || "Failed to assign profile.");
+      }
     } finally {
       setAssignLoading(false);
     }

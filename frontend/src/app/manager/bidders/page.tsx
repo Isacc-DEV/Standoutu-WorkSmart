@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "../../../lib/api";
 import { useAuth } from "../../../lib/useAuth";
@@ -18,6 +18,16 @@ export default function ManagerBiddersPage() {
   const [bidders, setBidders] = useState<BidderSummary[]>([]);
   const [error, setError] = useState("");
 
+  const loadData = useCallback(async (authToken: string) => {
+    try {
+      const summaries = await api<BidderSummary[]>("/manager/bidders/summary", undefined, authToken);
+      setBidders(summaries);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load bidders.");
+    }
+  }, []);
+
   useEffect(() => {
     if (loading) return;
     if (!user || !token) {
@@ -28,18 +38,9 @@ export default function ManagerBiddersPage() {
       router.replace("/workspace");
       return;
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadData(token);
-  }, [loading, user, token, router]);
-
-  async function loadData(authToken: string) {
-    try {
-      const summaries = await api<BidderSummary[]>("/manager/bidders/summary", undefined, authToken);
-      setBidders(summaries);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load bidders.");
-    }
-  }
+  }, [loading, user, token, router, loadData]);
 
   return (
     <ManagerShell>
