@@ -27,6 +27,12 @@ import {
   findUserById,
   initDb,
   insertProfile,
+  findProfileAccountById,
+  listProfileAccountsForUser,
+  upsertProfileAccount,
+  touchProfileAccount,
+  replaceCalendarEvents,
+  listCalendarEventsForOwner,
   insertLabelAlias,
   insertAssignmentRecord,
   insertResumeRecord,
@@ -43,6 +49,7 @@ import {
 } from './db';
 import { CANONICAL_LABEL_KEYS, DEFAULT_LABEL_ALIASES, buildAliasIndex, matchLabelToCanonical, normalizeLabelAlias } from './labelAliases';
 import { analyzeJobFromHtml, callPromptPack, promptBuilders } from './resumeClassifier';
+import { loadOutlookEvents } from './msGraph';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
 const app = fastify({ logger: true });
@@ -1302,6 +1309,192 @@ async function bootstrap() {
     }
     await deleteResumeById(resumeId);
     return { ok: true };
+  });
+
+  app.get('/calendar/accounts', async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: 'Unauthorized' });
+    }
+    const parsed = z
+      .object({
+        profileId: z.string().uuid().optional(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: 'Invalid query' });
+    }
+    return listProfileAccountsForUser(actor, parsed.data.profileId);
+  });
+
+  app.post('/calendar/accounts', async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: 'Unauthorized' });
+    }
+    const schema = z.object({
+      profileId: z.string().uuid(),
+      email: z.string().email(),
+      provider: z.enum(['MICROSOFT', 'GOOGLE']).default('MICROSOFT').optional(),
+      displayName: z.string().min(1).optional(),
+      timezone: z.string().min(2).optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+    const profile = await findProfileById(body.profileId);
+    if (!profile) {
+      return reply.status(404).send({ message: 'Profile not found' });
+    }
+    const isManager = actor.role === 'ADMIN' || actor.role === 'MANAGER';
+    const isAssignedBidder = profile.assignedBidderId === actor.id;
+    if (!isManager && !isAssignedBidder) {
+      return reply.status(403).send({ message: 'Not allowed to manage accounts for this profile' });
+    }
+    const account = await upsertProfileAccount({
+      id: randomUUID(),
+      profileId: body.profileId,
+      provider: body.provider ?? 'MICROSOFT',
+      email: body.email.toLowerCase(),
+      displayName: body.displayName ?? body.email,
+      timezone: body.timezone ?? 'UTC',
+      status: 'ACTIVE',
+    });
+    return account;
+  });
+
+
+    app.post('/calendar/events/sync', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
+      }
+    const schema = z.object({
+      mailboxes: z.array(z.string().email()).default([]),
+      timezone: z.string().min(2).optional(),
+      events: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            title: z.string().optional(),
+            start: z.string().min(1),
+            end: z.string().min(1),
+            isAllDay: z.boolean().optional(),
+            organizer: z.string().optional(),
+            location: z.string().optional(),
+            mailbox: z.string().email(),
+          }),
+        )
+        .default([]),
+    });
+    const body = schema.parse(request.body ?? {});
+    const mailboxes = body.mailboxes.map((mailbox) => mailbox.toLowerCase());
+    const events = body.events.map((event) => ({
+      ...event,
+      mailbox: event.mailbox.toLowerCase(),
+    }));
+      const storedEvents = await replaceCalendarEvents({
+        ownerUserId: actor.id,
+        mailboxes,
+        timezone: body.timezone ?? null,
+        events,
+      });
+      return { events: storedEvents };
+    });
+
+    app.get('/calendar/events/stored', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
+      }
+      const parsed = z
+        .object({
+          start: z.string().optional(),
+          end: z.string().optional(),
+          mailboxes: z.string().optional(),
+        })
+        .safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: 'Invalid query' });
+      }
+      const mailboxes = parsed.data.mailboxes
+        ? parsed.data.mailboxes
+            .split(',')
+            .map((mailbox) => mailbox.trim().toLowerCase())
+            .filter(Boolean)
+        : [];
+      let ownerUserId = actor.id;
+      if (actor.role !== 'ADMIN') {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM users WHERE role = 'ADMIN' ORDER BY created_at ASC LIMIT 1",
+        );
+        if (rows[0]?.id) {
+          ownerUserId = rows[0].id;
+        }
+      }
+      const events = await listCalendarEventsForOwner(ownerUserId, mailboxes, {
+        start: parsed.data.start ?? null,
+        end: parsed.data.end ?? null,
+      });
+      return { events };
+    });
+
+    app.get('/calendar/events', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
+    }
+    const parsed = z
+      .object({
+        accountId: z.string().uuid(),
+        start: z.string(),
+        end: z.string(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: 'Invalid query' });
+    }
+    const { accountId, start, end } = parsed.data;
+    const account = await findProfileAccountById(accountId);
+    if (!account) {
+      return reply.status(404).send({ message: 'Calendar account not found' });
+    }
+    const isManager = actor.role === 'ADMIN' || actor.role === 'MANAGER';
+    const isAssignedBidder = account.profileAssignedBidderId === actor.id;
+    if (!isManager && !isAssignedBidder) {
+      return reply.status(403).send({ message: 'Not allowed to view this calendar' });
+    }
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return reply.status(400).send({ message: 'Invalid date range' });
+    }
+    if (endDate <= startDate) {
+      return reply.status(400).send({ message: 'End must be after start' });
+    }
+    const { events: calendarEvents, source, warning } = await loadOutlookEvents({
+      email: account.email,
+      rangeStart: start,
+      rangeEnd: end,
+      timezone: account.timezone,
+      logger: request.log,
+    });
+    await touchProfileAccount(account.id, new Date().toISOString());
+    return {
+      account: {
+        id: account.id,
+        email: account.email,
+        profileId: account.profileId,
+        profileDisplayName: account.profileDisplayName,
+        timezone: account.timezone,
+      },
+      events: calendarEvents,
+      source,
+      warning,
+    };
   });
 
   app.get('/resumes/:id/file', async (request, reply) => {

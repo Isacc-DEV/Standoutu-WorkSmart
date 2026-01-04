@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { ClientUser, clearAuth, readAuth } from '../lib/auth';
+import { clearAuth } from '../lib/auth';
+import { useAuth } from '../lib/useAuth';
 
 function NavItem({
   href,
@@ -25,16 +25,10 @@ function NavItem({
     </Link>
   );
 }
-
 export default function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
-  const [user, setUser] = useState<ClientUser | null>(null);
-
-  useEffect(() => {
-    const stored = readAuth();
-    setUser(stored?.user ?? null);
-  }, [pathname]);
+  const { user } = useAuth();
 
   const signOut = () => {
     clearAuth();
@@ -53,6 +47,7 @@ export default function TopNav() {
         <nav className="flex items-center gap-2">
           <NavItem href="/" label="Home" active={pathname === '/'} />
           <NavItem href="/workspace" label="Workspace" active={pathname.startsWith('/workspace')} />
+          <NavItem href="/calendar" label="Calendar" active={pathname.startsWith('/calendar')} />
           <NavItem href="/about" label="About" active={pathname.startsWith('/about')} />
           <NavItem href="/career" label="Career" active={pathname.startsWith('/career')} />
           {isManager && (

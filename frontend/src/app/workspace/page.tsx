@@ -148,7 +148,6 @@ export default function Page() {
   const [useLlmAutofill, setUseLlmAutofill] = useState(false);
   const [session, setSession] = useState<ApplicationSession | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [recommended, setRecommended] = useState<AnalyzeResult | null>(null);
   const [fillPlan, setFillPlan] = useState<FillPlan | null>(null);
   const [capturedFields, setCapturedFields] = useState<PageFieldCandidate[]>([]);
   const [frameLoaded, setFrameLoaded] = useState(false);
@@ -238,7 +237,6 @@ export default function Page() {
     setSession(null);
     setFillPlan(null);
     setCapturedFields([]);
-    setRecommended(null);
     setStreamFrame("");
     setStreamConnected(false);
     const base = profiles.find((p) => p.id === selectedProfileId)?.baseInfo;
@@ -342,7 +340,6 @@ export default function Page() {
         body: JSON.stringify({ useAi: useAiAnalyze }),
       });
       const result = res as AnalyzeResult;
-      setRecommended(result);
       const mode = result.mode ?? (useAiAnalyze ? "resume" : "tech");
 
       if (mode === "tech") {
@@ -625,11 +622,11 @@ export default function Page() {
                     <div className="relative h-full w-full">
                       {/* @ts-expect-error Electron webview not in TS DOM lib */}
                       <webview
-                        ref={webviewRef}
+                        ref={webviewRef as unknown as React.Ref<HTMLWebViewElement>}
                         key={browserSrc}
                         src={browserSrc}
                         partition={webviewPartition}
-                        allowpopups="true"
+                        allowpopups={true}
                         style={{ height: "100%", width: "100%", backgroundColor: "#020617" }}
                       />
                       <div className="absolute top-2 right-3 flex items-center gap-2 text-[11px] text-slate-800">
@@ -1093,11 +1090,6 @@ function cleanBaseInfo(base: BaseInfo): BaseInfo {
     preferences: base?.preferences ?? {},
     defaultAnswers: base?.defaultAnswers ?? {},
   };
-}
-
-function buildBaseInfoPayload(base: BaseInfo): BaseInfo {
-  const cleaned = cleanBaseInfo(base);
-  return { ...cleaned, contact: { ...cleaned.contact, phone: formatPhone(cleaned.contact) } };
 }
 
 function formatScore(score?: number) {
