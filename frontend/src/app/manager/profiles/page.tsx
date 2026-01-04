@@ -1038,11 +1038,30 @@ export default function ManagerProfilesPage() {
     </ManagerShell>
   );
 
+  function parseAssignError(err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!message) return { message: "Failed to assign profile." };
+    try {
+      const parsed = JSON.parse(message) as { message?: string; assignmentId?: string };
+      if (parsed?.message) return { message: parsed.message, assignmentId: parsed.assignmentId };
+    } catch {
+      // Non-JSON error text.
+    }
+    return { message };
+  }
+
   async function handleAssign() {
     if (!selectedProfile || !assignBidderId || !token || !user) return;
+    if (activeAssignment && activeAssignment.bidderUserId === assignBidderId) {
+      setError("This profile is already assigned to the selected bidder.");
+      return;
+    }
     setAssignLoading(true);
     setError("");
     try {
+      if (activeAssignment && activeAssignment.bidderUserId !== assignBidderId) {
+        await api(`/assignments/${activeAssignment.id}/unassign`, { method: "POST", body: "{}" }, token);
+      }
       await api(
         "/assignments",
         {
@@ -1058,7 +1077,13 @@ export default function ManagerProfilesPage() {
       await loadAssignments(token);
     } catch (err) {
       console.error(err);
-      setError("Failed to assign profile.");
+      const parsed = parseAssignError(err);
+      if (parsed.message === "Profile already assigned") {
+        await loadAssignments(token);
+        setError("Profile already assigned. Use Unassign to change the bidder.");
+      } else {
+        setError(parsed.message || "Failed to assign profile.");
+      }
     } finally {
       setAssignLoading(false);
     }

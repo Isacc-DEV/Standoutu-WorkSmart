@@ -32,6 +32,7 @@ import {
   upsertProfileAccount,
   touchProfileAccount,
   replaceCalendarEvents,
+  listCalendarEventsForOwner,
   insertLabelAlias,
   insertAssignmentRecord,
   insertResumeRecord,
@@ -1363,12 +1364,12 @@ async function bootstrap() {
   });
 
 
-  app.post('/calendar/events/sync', async (request, reply) => {
-    if (forbidObserver(reply, request.authUser)) return;
-    const actor = request.authUser;
-    if (!actor) {
-      return reply.status(401).send({ message: 'Unauthorized' });
-    }
+    app.post('/calendar/events/sync', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
+      }
     const schema = z.object({
       mailboxes: z.array(z.string().email()).default([]),
       timezone: z.string().min(2).optional(),
@@ -1393,20 +1394,58 @@ async function bootstrap() {
       ...event,
       mailbox: event.mailbox.toLowerCase(),
     }));
-    const storedEvents = await replaceCalendarEvents({
-      ownerUserId: actor.id,
-      mailboxes,
-      timezone: body.timezone ?? null,
-      events,
+      const storedEvents = await replaceCalendarEvents({
+        ownerUserId: actor.id,
+        mailboxes,
+        timezone: body.timezone ?? null,
+        events,
+      });
+      return { events: storedEvents };
     });
-    return { events: storedEvents };
-  });
 
-  app.get('/calendar/events', async (request, reply) => {
-    if (forbidObserver(reply, request.authUser)) return;
-    const actor = request.authUser;
-    if (!actor) {
-      return reply.status(401).send({ message: 'Unauthorized' });
+    app.get('/calendar/events/stored', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
+      }
+      const parsed = z
+        .object({
+          start: z.string().optional(),
+          end: z.string().optional(),
+          mailboxes: z.string().optional(),
+        })
+        .safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: 'Invalid query' });
+      }
+      const mailboxes = parsed.data.mailboxes
+        ? parsed.data.mailboxes
+            .split(',')
+            .map((mailbox) => mailbox.trim().toLowerCase())
+            .filter(Boolean)
+        : [];
+      let ownerUserId = actor.id;
+      if (actor.role !== 'ADMIN') {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM users WHERE role = 'ADMIN' ORDER BY created_at ASC LIMIT 1",
+        );
+        if (rows[0]?.id) {
+          ownerUserId = rows[0].id;
+        }
+      }
+      const events = await listCalendarEventsForOwner(ownerUserId, mailboxes, {
+        start: parsed.data.start ?? null,
+        end: parsed.data.end ?? null,
+      });
+      return { events };
+    });
+
+    app.get('/calendar/events', async (request, reply) => {
+      if (forbidObserver(reply, request.authUser)) return;
+      const actor = request.authUser;
+      if (!actor) {
+        return reply.status(401).send({ message: 'Unauthorized' });
     }
     const parsed = z
       .object({

@@ -412,6 +412,7 @@ export async function touchProfileAccount(id: string, lastSyncAt?: string) {
 export async function listCalendarEventsForOwner(
   ownerUserId: string,
   mailboxes?: string[],
+  range?: { start?: string | null; end?: string | null },
 ): Promise<StoredCalendarEvent[]> {
   const { rows } = await pool.query<StoredCalendarEvent>(
     `
@@ -427,9 +428,16 @@ export async function listCalendarEventsForOwner(
       FROM calendar_events
       WHERE owner_user_id = $1
         AND ($2::text[] IS NULL OR mailbox = ANY($2))
+        AND ($3::text IS NULL OR end_at >= $3)
+        AND ($4::text IS NULL OR start_at <= $4)
       ORDER BY start_at ASC
     `,
-    [ownerUserId, mailboxes && mailboxes.length ? mailboxes : null],
+    [
+      ownerUserId,
+      mailboxes && mailboxes.length ? mailboxes : null,
+      range?.start ?? null,
+      range?.end ?? null,
+    ],
   );
   return rows;
 }
