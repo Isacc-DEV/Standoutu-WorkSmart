@@ -110,7 +110,7 @@ export function MessageList({
               onMouseEnter={() => onHoverChange(message.id)}
               onMouseLeave={() => onHoverChange(null)}
             >
-              <AvatarBubble name={sender} active={isSelf} />
+              <AvatarBubble name={sender} active={isSelf} avatarUrl={message.senderAvatarUrl} />
               <div className="max-w-sm">
                 <div
                   className={`flex items-center gap-2 ${

@@ -1,20 +1,19 @@
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY!;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
 const BUCKET_NAME = process.env.COMMUNITY_FILES_BUCKET_STORAGE || 'community-files';
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing Supabase credentials in environment');
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
 export async function uploadFile(
   file: Buffer,
   fileName: string,
   mimeType: string,
 ): Promise<{ url: string; path: string }> {
+  if (!supabase) {
+    throw new Error('Supabase is not configured');
+  }
   const timestamp = Date.now();
   const safeName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
   const filePath = `${timestamp}_${safeName}`;

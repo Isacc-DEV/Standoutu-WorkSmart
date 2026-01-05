@@ -16,7 +16,7 @@ export type CommunityDmThread = {
   isPrivate: boolean;
   createdAt: string;
   lastMessageAt?: string | null;
-  participants?: { id: string; name: string; email: string }[];
+  participants?: { id: string; name: string; email: string; avatarUrl?: string | null }[];
 };
 
 export type MessageAttachment = {
@@ -49,6 +49,7 @@ export type CommunityMessage = {
   threadId: string;
   senderId: string;
   senderName?: string | null;
+  senderAvatarUrl?: string | null;
   body: string;
   createdAt: string;
   isEdited?: boolean;
@@ -71,6 +72,7 @@ export type DirectoryUser = {
   name: string;
   email: string;
   role: string;
+  avatarUrl?: string | null;
 };
 
 export type UnreadInfo = {
@@ -97,4 +99,5 @@ export type User = {
   name: string;
   email: string;
   role: string;
+  avatarUrl?: string | null;
 };

@@ -1446,6 +1446,7 @@ async function bootstrap() {
       email: z.string().email(),
       password: z.string().min(3),
       name: z.string().min(2),
+      avatarUrl: z.string().trim().optional(),
     });
     const body = schema.parse(request.body);
     const exists = await findUserByEmail(body.email);
@@ -1453,11 +1454,16 @@ async function bootstrap() {
       return reply.status(409).send({ message: "Email already registered" });
     }
     const hashed = await bcrypt.hash(body.password, 8);
+    const normalizedAvatar =
+      body.avatarUrl && body.avatarUrl.toLowerCase() !== "nope"
+        ? body.avatarUrl
+        : null;
     const user: User = {
       id: randomUUID(),
       email: body.email,
       role: "OBSERVER",
       name: body.name,
+      avatarUrl: normalizedAvatar,
       isActive: true,
       password: hashed,
     };
@@ -2166,7 +2172,14 @@ async function bootstrap() {
         threadType: "DM",
         isPrivate: true,
         createdAt: thread.createdAt,
-        participants: [{ id: other.id, name: other.name, email: other.email }],
+        participants: [
+          {
+            id: other.id,
+            name: other.name,
+            email: other.email,
+            avatarUrl: other.avatarUrl ?? null,
+          },
+        ],
       }
     );
   });
@@ -2878,7 +2891,7 @@ async function bootstrap() {
     const roleFilter = role ? role.toUpperCase() : null;
 
     const baseSql = `
-      SELECT id, email, name, role, is_active as "isActive"
+      SELECT id, email, name, avatar_url AS "avatarUrl", role, is_active as "isActive"
       FROM users
       WHERE is_active = TRUE
     `;

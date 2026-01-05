@@ -34,9 +34,10 @@ export function InfoRow({ label, value }: InfoRowProps) {
 type AvatarBubbleProps = {
   name: string;
   active: boolean;
+  avatarUrl?: string | null;
 };
 
-export function AvatarBubble({ name, active }: AvatarBubbleProps) {
+export function AvatarBubble({ name, active, avatarUrl }: AvatarBubbleProps) {
   const initials = name
     .split(' ')
     .map((part) => part.trim()[0])
@@ -44,13 +45,23 @@ export function AvatarBubble({ name, active }: AvatarBubbleProps) {
     .slice(0, 2)
     .join('')
     .toUpperCase();
+  const cleanedAvatar = avatarUrl?.trim();
+  const hasAvatar = Boolean(cleanedAvatar) && cleanedAvatar?.toLowerCase() !== 'nope';
   return (
     <span
-      className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold ${
-        active ? 'bg-[var(--community-accent)] text-[var(--community-ink)]' : 'bg-slate-900 text-white'
+      className={`flex h-7 w-7 items-center justify-center overflow-hidden rounded-full text-[10px] font-semibold ${
+        hasAvatar
+          ? 'bg-slate-900/10'
+          : active
+            ? 'bg-[var(--community-accent)] text-[var(--community-ink)]'
+            : 'bg-slate-900 text-white'
       }`}
     >
-      {initials || 'DM'}
+      {hasAvatar ? (
+        <img src={cleanedAvatar} alt={`${name} avatar`} className="h-full w-full object-cover" />
+      ) : (
+        initials || 'DM'
+      )}
     </span>
   );
 }

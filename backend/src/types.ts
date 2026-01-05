@@ -5,6 +5,7 @@ export interface User {
   email: string;
   role: UserRole;
   name: string;
+  avatarUrl?: string | null;
   isActive: boolean;
   password?: string;
 }
@@ -202,6 +203,7 @@ export interface CommunityThreadParticipant {
   id: string;
   name: string;
   email: string;
+  avatarUrl?: string | null;
 }
 
 export interface CommunityThreadSummary {
@@ -220,6 +222,7 @@ export interface CommunityMessage {
   threadId: string;
   senderId: string;
   senderName?: string | null;
+  senderAvatarUrl?: string | null;
   body: string;
   replyToMessageId?: string | null;
   isEdited: boolean;

@@ -1,9 +1,21 @@
-'use client';
+﻿'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { clearAuth } from '../lib/auth';
 import { useAuth } from '../lib/useAuth';
+
+function getInitials(name?: string | null) {
+  if (!name) return 'DM';
+  return name
+    .split(' ')
+    .map((part) => part.trim()[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+}
 
 function NavItem({
   href,
@@ -37,6 +49,24 @@ export default function TopNav() {
 
   const isAdmin = user?.role === 'ADMIN';
   const isManager = user?.role === 'MANAGER' || isAdmin;
+  const avatarUrl = user?.avatarUrl?.trim();
+  const hasAvatar = Boolean(avatarUrl) && avatarUrl?.toLowerCase() !== 'nope';
+  const initials = getInitials(user?.name);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleClick = (event: MouseEvent) => {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+    };
+  }, []);
 
   return (
     <header className="w-full border-b border-white/5 bg-[#0b1020] backdrop-blur">
@@ -64,17 +94,42 @@ export default function TopNav() {
         </nav>
         <div className="flex items-center gap-3">
           {user ? (
-            <>
-              <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white">
-                {user.name} · {user.role.toLowerCase()}
-              </span>
+            <div className="relative" ref={menuRef}>
               <button
-                onClick={signOut}
-                className="rounded-full border border-white/15 px-3 py-1 text-xs text-white hover:bg-white/10"
+                type="button"
+                onClick={() => setMenuOpen((prev) => !prev)}
+                className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs text-white transition hover:bg-white/20"
               >
-                Sign out
+                <span className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-white/15 text-[9px] font-semibold text-white">
+                  {hasAvatar ? (
+                    <img src={avatarUrl} alt={`${user.name} avatar`} className="h-full w-full object-cover" />
+                  ) : (
+                    initials
+                  )}
+                </span>
+                <span>
+                  {user.name} - {user.role.toLowerCase()}
+                </span>
+                <span className="text-[10px] text-slate-300">v</span>
               </button>
-            </>
+              {menuOpen && (
+                <div className="absolute right-0 mt-2 w-40 rounded-xl border border-slate-200 bg-white p-1 text-xs text-slate-700 shadow-lg">
+                  <Link
+                    href="/profile"
+                    className="block rounded-lg px-3 py-2 transition hover:bg-slate-100"
+                  >
+                    Profile
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={signOut}
+                    className="w-full rounded-lg px-3 py-2 text-left transition hover:bg-slate-100"
+                  >
+                    Log out
+                  </button>
+                </div>
+              )}
+            </div>
           ) : (
             <Link
               href="/auth"
@@ -88,3 +143,4 @@ export default function TopNav() {
     </header>
   );
 }
+

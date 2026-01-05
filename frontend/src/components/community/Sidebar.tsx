@@ -117,7 +117,7 @@ export function Sidebar({
                   disabled={Boolean(creatingDmId)}
                   className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left transition hover:bg-[var(--community-soft)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  <AvatarBubble name={member.name} active={false} />
+                  <AvatarBubble name={member.name} active={false} avatarUrl={member.avatarUrl} />
                   <div className="flex-1">
                     <div className="text-sm font-semibold text-slate-900">{member.name}</div>
                     {isStarting && <div className="mt-1 text-[10px] text-slate-500">Starting DM...</div>}

@@ -62,10 +62,49 @@ export async function initDb() {
         id UUID PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
+        avatar_url TEXT,
         role TEXT NOT NULL,
         password TEXT NOT NULL,
         is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS "User" (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        email TEXT,
+        "emailVerified" TIMESTAMP(3),
+        image TEXT,
+        avatar_url TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS "Account" (
+        id TEXT PRIMARY KEY,
+        "userId" TEXT NOT NULL,
+        type TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        "providerAccountId" TEXT NOT NULL,
+        refresh_token TEXT,
+        access_token TEXT,
+        expires_at INTEGER,
+        ext_expires_in INTEGER,
+        token_type TEXT,
+        scope TEXT,
+        id_token TEXT,
+        session_state TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS "Session" (
+        id TEXT PRIMARY KEY,
+        "sessionToken" TEXT NOT NULL,
+        "userId" TEXT NOT NULL,
+        expires TIMESTAMP(3) NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS "VerificationToken" (
+        identifier TEXT NOT NULL,
+        token TEXT NOT NULL,
+        expires TIMESTAMP(3) NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS profiles (
@@ -258,6 +297,11 @@ export async function initDb() {
         updated_at TIMESTAMP DEFAULT NOW()
       );
 
+      ALTER TABLE IF EXISTS users
+        ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+      ALTER TABLE IF EXISTS "User"
+        ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
       -- Backfill new community message columns before creating indexes.
       ALTER TABLE IF EXISTS community_messages
         ADD COLUMN IF NOT EXISTS reply_to_message_id UUID REFERENCES community_messages(id);
@@ -284,6 +328,11 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_unread_user ON community_unread_messages(user_id);
       CREATE INDEX IF NOT EXISTS idx_unread_thread ON community_unread_messages(thread_id);
       CREATE INDEX IF NOT EXISTS idx_pinned_thread ON community_pinned_messages(thread_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"(email);
+      CREATE UNIQUE INDEX IF NOT EXISTS "Account_provider_providerAccountId_key" ON "Account"(provider, "providerAccountId");
+      CREATE UNIQUE INDEX IF NOT EXISTS "Session_sessionToken_key" ON "Session"("sessionToken");
+      CREATE UNIQUE INDEX IF NOT EXISTS "VerificationToken_token_key" ON "VerificationToken"(token);
+      CREATE UNIQUE INDEX IF NOT EXISTS "VerificationToken_identifier_token_key" ON "VerificationToken"(identifier, token);
 
       CREATE TABLE IF NOT EXISTS calendar_events (
         id UUID PRIMARY KEY,
@@ -397,7 +446,7 @@ export async function initDb() {
 
 export async function findUserByEmail(email: string) {
   const { rows } = await pool.query<User>(
-    'SELECT id, email, name, role, is_active as "isActive", password FROM users WHERE email = $1',
+    'SELECT id, email, name, avatar_url AS "avatarUrl", role, is_active as "isActive", password FROM users WHERE email = $1',
     [email],
   );
   return rows[0];
@@ -405,20 +454,35 @@ export async function findUserByEmail(email: string) {
 
 export async function findUserById(id: string) {
   const { rows } = await pool.query<User>(
-    'SELECT id, email, name, role, is_active as "isActive", password FROM users WHERE id = $1',
+    'SELECT id, email, name, avatar_url AS "avatarUrl", role, is_active as "isActive", password FROM users WHERE id = $1',
     [id],
   );
   return rows[0];
 }
 
 export async function insertUser(user: User) {
+  const avatarUrl =
+    user.avatarUrl && user.avatarUrl.toLowerCase() !== 'nope' ? user.avatarUrl : null;
   await pool.query(
     `
-      INSERT INTO users (id, email, name, role, password, is_active)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, role = EXCLUDED.role, password = EXCLUDED.password, is_active = EXCLUDED.is_active
+      INSERT INTO users (id, email, name, avatar_url, role, password, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (email) DO UPDATE SET
+        name = EXCLUDED.name,
+        avatar_url = EXCLUDED.avatar_url,
+        role = EXCLUDED.role,
+        password = EXCLUDED.password,
+        is_active = EXCLUDED.is_active
     `,
-    [user.id, user.email, user.name, user.role, user.password ?? 'demo', user.isActive ?? true],
+    [
+      user.id,
+      user.email,
+      user.name,
+      avatarUrl,
+      user.role,
+      user.password ?? 'demo',
+      user.isActive ?? true,
+    ],
   );
 }
 
@@ -1079,7 +1143,7 @@ export async function listCommunityDmThreads(userId: string): Promise<CommunityT
         t.last_message_at AS "lastMessageAt",
         COALESCE(
           json_agg(
-            json_build_object('id', u.id, 'name', u.name, 'email', u.email)
+            json_build_object('id', u.id, 'name', u.name, 'email', u.email, 'avatarUrl', u.avatar_url)
           ) FILTER (WHERE u.id IS NOT NULL),
           '[]'::json
         ) AS participants
@@ -1251,7 +1315,7 @@ export async function getCommunityDmThreadSummary(
         t.last_message_at AS "lastMessageAt",
         COALESCE(
           json_agg(
-            json_build_object('id', u.id, 'name', u.name, 'email', u.email)
+            json_build_object('id', u.id, 'name', u.name, 'email', u.email, 'avatarUrl', u.avatar_url)
           ) FILTER (WHERE u.id IS NOT NULL),
           '[]'::json
         ) AS participants
@@ -1278,6 +1342,7 @@ export async function listCommunityMessages(threadId: string): Promise<Community
         m.thread_id AS "threadId",
         m.sender_id AS "senderId",
         u.name AS "senderName",
+        u.avatar_url AS "senderAvatarUrl",
         m.body,
         m.created_at AS "createdAt"
       FROM community_messages m
@@ -1322,6 +1387,7 @@ export async function insertCommunityMessage(message: CommunityMessage): Promise
         inserted.thread_id AS "threadId",
         inserted.sender_id AS "senderId",
         u.name AS "senderName",
+        u.avatar_url AS "senderAvatarUrl",
         inserted.body,
         inserted.reply_to_message_id AS "replyToMessageId",
         inserted.is_edited AS "isEdited",
@@ -1492,7 +1558,7 @@ export async function listCommunityMessagesWithPagination(
   let query = `
     SELECT 
       m.id, m.thread_id AS "threadId", m.sender_id AS "senderId", 
-      u.name AS "senderName", m.body, m.reply_to_message_id AS "replyToMessageId",
+      u.name AS "senderName", u.avatar_url AS "senderAvatarUrl", m.body, m.reply_to_message_id AS "replyToMessageId",
       m.is_edited AS "isEdited", m.edited_at AS "editedAt",
       m.is_deleted AS "isDeleted", m.deleted_at AS "deletedAt",
       m.created_at AS "createdAt"
@@ -1522,7 +1588,7 @@ export async function getMessageById(messageId: string): Promise<CommunityMessag
     `
       SELECT 
         m.id, m.thread_id AS "threadId", m.sender_id AS "senderId",
-        u.name AS "senderName", m.body, m.reply_to_message_id AS "replyToMessageId",
+        u.name AS "senderName", u.avatar_url AS "senderAvatarUrl", m.body, m.reply_to_message_id AS "replyToMessageId",
         m.is_edited AS "isEdited", m.edited_at AS "editedAt",
         m.is_deleted AS "isDeleted", m.deleted_at AS "deletedAt",
         m.created_at AS "createdAt"
@@ -1585,6 +1651,7 @@ export async function pinMessage(threadId: string, messageId: string, userId: st
           'threadId', m.thread_id,
           'senderId', m.sender_id,
           'senderName', u.name,
+          'senderAvatarUrl', u.avatar_url,
           'body', m.body,
           'createdAt', m.created_at,
           'isEdited', m.is_edited,
@@ -1621,6 +1688,7 @@ export async function listPinnedMessages(threadId: string): Promise<PinnedMessag
           'threadId', m.thread_id,
           'senderId', m.sender_id,
           'senderName', u.name,
+          'senderAvatarUrl', u.avatar_url,
           'body', m.body,
           'createdAt', m.created_at,
           'isEdited', m.is_edited,

@@ -7,6 +7,7 @@ export type ClientUser = {
   email: string;
   name: string;
   role: ClientRole;
+  avatarUrl?: string | null;
 };
 
 type StoredAuth = {
