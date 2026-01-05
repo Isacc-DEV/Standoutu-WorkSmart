@@ -1,5 +1,23 @@
 import "dotenv/config";
 
+const defaultCorsOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3300',
+  'http://localhost:4000',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3300',
+  'http://127.0.0.1:4000',
+];
+
+const corsEnv = (process.env.CORS_ORIGINS || '').trim();
+const corsOrigins: string[] | true =
+  corsEnv === '*'
+    ? true
+    : corsEnv
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean);
+
 export const config = {
   PORT: process.env.PORT ? Number(process.env.PORT) : 4000,
   
@@ -7,14 +25,7 @@ export const config = {
 
   DEBUG_MODE: false,
   
-  CORS_ORIGINS: [
-    'http://localhost:3000',
-    'http://localhost:3300',
-    'http://localhost:4000',
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:3300',
-    'http://127.0.0.1:4000',
-  ] as string[],
+  CORS_ORIGINS: corsEnv ? corsOrigins : defaultCorsOrigins,
   
   RESUME_DIR: process.env.RESUME_DIR || '',
   

@@ -5,7 +5,10 @@ import { authOptions } from '../../../../auth/[...nextauth]/route';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:4000';
 
-export async function DELETE(request: NextRequest, context: { params: { id?: string } }) {
+export async function DELETE(
+  request: NextRequest,
+  context: { params: Promise<{ id: string }> | { id?: string } },
+) {
   const session = await getServerSession(authOptions);
   const userId = (session?.user as { id?: string } | undefined)?.id;
   if (!session || !userId) {
@@ -14,8 +17,9 @@ export async function DELETE(request: NextRequest, context: { params: { id?: str
 
   const body = (await request.json().catch(() => null)) as { mailbox?: string; accountId?: string } | null;
   const url = new URL(request.url);
+  const params = await context.params;
   const accountId =
-    context.params.id ||
+    params.id ||
     body?.accountId ||
     url.searchParams.get('accountId') ||
     '';

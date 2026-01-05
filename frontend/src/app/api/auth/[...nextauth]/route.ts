@@ -2,6 +2,7 @@ import { PrismaAdapter } from '@next-auth/prisma-adapter';
 import NextAuth, { type NextAuthOptions } from 'next-auth';
 import { type JWT } from 'next-auth/jwt';
 import AzureADProvider from 'next-auth/providers/azure-ad';
+import type { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
 const tenantId = process.env.MS_TENANT_ID || 'common';
@@ -58,7 +59,6 @@ async function refreshAccessToken(token: AuthToken) {
 
 export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
-  adapter: PrismaAdapter(prisma),
   session: { strategy: 'jwt' },
   providers: [
     AzureADProvider({
@@ -113,6 +113,46 @@ export const authOptions: NextAuthOptions = {
   },
 };
 
-const handler = NextAuth(authOptions);
+let prismaAdapterEnabled: boolean | null = null;
+let authOptionsWithAdapter: NextAuthOptions | null = null;
+
+async function canUsePrismaAdapter() {
+  if (prismaAdapterEnabled !== null) return prismaAdapterEnabled;
+  if (process.env.NEXTAUTH_PRISMA_DISABLED === 'true') {
+    prismaAdapterEnabled = false;
+    return false;
+  }
+  if (!process.env.DATABASE_URL) {
+    prismaAdapterEnabled = false;
+    return false;
+  }
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    prismaAdapterEnabled = true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[next-auth] Prisma adapter disabled: ${message}`);
+    prismaAdapterEnabled = false;
+  }
+  return prismaAdapterEnabled;
+}
+
+async function getAuthOptions() {
+  const useAdapter = await canUsePrismaAdapter();
+  if (!useAdapter) return authOptions;
+  if (!authOptionsWithAdapter) {
+    authOptionsWithAdapter = { ...authOptions, adapter: PrismaAdapter(prisma) };
+  }
+  return authOptionsWithAdapter ?? authOptions;
+}
+
+const handler = async (
+  req: NextRequest,
+  ctx: { params: Promise<{ nextauth: string[] }> | { nextauth: string[] } },
+) => {
+  const options = await getAuthOptions();
+  const params = await ctx.params;
+  return NextAuth(options)(req, { params });
+};
 
 export { handler as GET, handler as POST };
