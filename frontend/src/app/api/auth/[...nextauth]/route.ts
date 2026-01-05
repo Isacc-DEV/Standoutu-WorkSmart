@@ -2,6 +2,7 @@ import { PrismaAdapter } from '@next-auth/prisma-adapter';
 import NextAuth, { type NextAuthOptions } from 'next-auth';
 import { type JWT } from 'next-auth/jwt';
 import AzureADProvider from 'next-auth/providers/azure-ad';
+import type { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
 const tenantId = process.env.MS_TENANT_ID || 'common';
@@ -145,9 +146,13 @@ async function getAuthOptions() {
   return authOptionsWithAdapter ?? authOptions;
 }
 
-const handler = async (req: Request) => {
+const handler = async (
+  req: NextRequest,
+  ctx: { params: Promise<{ nextauth: string[] }> | { nextauth: string[] } },
+) => {
   const options = await getAuthOptions();
-  return NextAuth(options)(req);
+  const params = await ctx.params;
+  return NextAuth(options)(req, { params });
 };
 
 export { handler as GET, handler as POST };

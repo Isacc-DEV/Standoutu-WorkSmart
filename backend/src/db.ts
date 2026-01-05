@@ -509,6 +509,31 @@ export async function initDb() {
       await client.query('INSERT INTO seed_flags (key) VALUES ($1)', [communitySeedKey]);
     }
 
+    const adminSeedKey = 'default_admin_seed';
+    const { rows: adminSeedRows } = await client.query<{ key: string }>(
+      'SELECT key FROM seed_flags WHERE key = $1',
+      [adminSeedKey],
+    );
+    if (adminSeedRows.length === 0) {
+      await client.query(
+        `
+          INSERT INTO users (id, email, name, role, password, is_active, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (email) DO NOTHING
+        `,
+        [
+          'b288230a-590d-4030-85d4-c72dfe7f5ae6',
+          'wrenikey.dev@gmail.com',
+          'Isacc Wang',
+          'ADMIN',
+          '$2a$08$TgVEMWkdL0OQnqpAbXGoJe/sUpU9iRaTNvKBN25pJAr2TWQoZ4yC2',
+          true,
+          '2025-12-12 00:52:11.345273',
+        ],
+      );
+      await client.query('INSERT INTO seed_flags (key) VALUES ($1)', [adminSeedKey]);
+    }
+
     // No seed data inserted; database starts empty.
   } finally {
     client.release();

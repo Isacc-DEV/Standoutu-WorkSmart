@@ -432,7 +432,9 @@ export async function GET(request: NextRequest) {
         status: 'success' as const,
         mailbox: fallbackMailbox,
         providerAccountId: primaryAccountId || fallbackMailbox,
-        name: session.user?.name,
+        accountId: primaryAccountId || fallbackMailbox,
+        isPrimary: true,
+        name: session.user?.name ?? undefined,
         events,
       });
     } else {
@@ -440,6 +442,8 @@ export async function GET(request: NextRequest) {
         status: 'error' as const,
         mailbox: fallbackMailbox,
         providerAccountId: primaryAccountId || fallbackMailbox,
+        accountId: primaryAccountId || fallbackMailbox,
+        isPrimary: true,
         error,
       });
     }

@@ -4,8 +4,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import TopNav from "../../components/TopNav";
+import { API_BASE } from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 const CONNECT_TIMEOUT_MS = 20000;
 const CHECK_TIMEOUT_MS = 10000;
 type DesktopBridge = {
@@ -1127,13 +1127,12 @@ export default function Page() {
                 ) : browserSrc ? (
                   isElectron ? (
                     <div className="relative h-full w-full">
-                      {/* @ts-expect-error Electron webview not in TS DOM lib */}
                       <webview
                         ref={webviewRef as unknown as React.Ref<HTMLWebViewElement>}
                         key={browserSrc}
                         src={browserSrc}
                         partition={webviewPartition}
-                        allowpopups="true"
+                        allowpopups={true}
                         style={{ height: "100%", width: "100%", backgroundColor: "#020617" }}
                       />
                       <div className="absolute top-2 right-3 flex items-center gap-2 text-[11px] text-slate-800">

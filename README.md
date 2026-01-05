@@ -15,7 +15,8 @@ npm install
 
 ## Configuration
 - Backend: copy `backend/.env.example` to `backend/.env` and set `DATABASE_URL`. Optional: set Supabase + Azure values for uploads and Graph integration.
-- Frontend: copy `frontend/.env.local.example` to `frontend/.env.local` and set `DATABASE_URL`, `NEXT_PUBLIC_API_BASE`, and NextAuth/Azure variables.
+- Frontend (local): copy `frontend/.env.local.example` to `frontend/.env.local` and set `DATABASE_URL`, `NEXT_PUBLIC_API_BASE`, and NextAuth/Azure variables.
+- Frontend (non-local): copy `frontend/.env.production.example` to `frontend/.env.production` and set public host/port values for `NEXT_PUBLIC_API_BASE`, `NEXTAUTH_URL`, and `MS_REDIRECT_URI`.
 - Database: backend auto-creates required tables (including NextAuth tables) on startup.
 
 ## Run (two terminals)

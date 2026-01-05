@@ -4,7 +4,25 @@ const LOCAL_API_PORT = 4000;
 
 function resolveApiBase(): string {
   const envBase = (process.env.NEXT_PUBLIC_API_BASE || '').trim();
-  if (envBase) return envBase.replace(/\/$/, '');
+  if (envBase) {
+    const normalized = envBase.replace(/\/$/, '');
+    if (typeof window !== 'undefined') {
+      try {
+        const envUrl = new URL(normalized);
+        const envHost = envUrl.hostname;
+        const isEnvLocal = envHost === 'localhost' || envHost === '127.0.0.1';
+        const isWindowLocal =
+          window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        if (isEnvLocal && !isWindowLocal) {
+          const port = envUrl.port || String(LOCAL_API_PORT);
+          return `${window.location.protocol}//${window.location.hostname}:${port}`;
+        }
+      } catch {
+        // Fall through to use the env base as-is.
+      }
+    }
+    return normalized;
+  }
   if (typeof window === 'undefined') return '';
   const { protocol, hostname } = window.location;
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
