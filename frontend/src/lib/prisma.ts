@@ -1,4 +1,9 @@
+import { loadEnvConfig } from '@next/env';
 import { PrismaClient } from '@prisma/client';
+
+if (!process.env.DATABASE_URL) {
+  loadEnvConfig(process.cwd());
+}
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 

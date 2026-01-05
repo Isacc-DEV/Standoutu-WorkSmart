@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
-import { randomUUID } from 'crypto';
 import {
   ApplicationRecord,
   ApplicationSummary,
@@ -27,6 +26,7 @@ import {
   APPLICATION_SUCCESS_KEY,
   normalizeLabelAlias,
 } from './labelAliases';
+import { config } from './config';
 
 type CalendarEventInput = {
   id: string;
@@ -51,7 +51,7 @@ type StoredCalendarEvent = {
 };
 
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: config.DATABASE_URL,
 });
 
 export async function initDb() {
@@ -278,7 +278,6 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_community_members_thread ON community_thread_members(thread_id);
       CREATE INDEX IF NOT EXISTS idx_community_members_user ON community_thread_members(user_id);
       CREATE INDEX IF NOT EXISTS idx_community_messages_thread ON community_messages(thread_id);
-      CREATE INDEX IF NOT EXISTS idx_community_messages_reply ON community_messages(reply_to_message_id);
       CREATE INDEX IF NOT EXISTS idx_attachments_message ON community_message_attachments(message_id);
       CREATE INDEX IF NOT EXISTS idx_reactions_message ON community_message_reactions(message_id);
       CREATE INDEX IF NOT EXISTS idx_reactions_user ON community_message_reactions(user_id);
@@ -323,6 +322,10 @@ export async function initDb() {
 
       DROP TABLE IF EXISTS assignments;
     `);
+
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_community_messages_reply ON community_messages(reply_to_message_id);',
+    );
 
     const seedKey = 'application_phrases_seed';
     const { rows: seedRows } = await client.query<{ key: string }>(

@@ -169,6 +169,8 @@ export default function Page() {
     "https://www.wave.com/en/careers/job/5725498004/?source=LinkedIn"
   );
   const [useLlmAutofill, setUseLlmAutofill] = useState(false);
+  const [applicationPhrases, setApplicationPhrases] = useState<string[]>([]);
+  const [checkEnabled, setCheckEnabled] = useState(false);
   const [session, setSession] = useState<ApplicationSession | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [fillPlan, setFillPlan] = useState<FillPlan | null>(null);
