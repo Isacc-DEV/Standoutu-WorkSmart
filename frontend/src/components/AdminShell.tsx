@@ -7,6 +7,7 @@ import TopNav from "./TopNav";
 const links = [
   { href: "/admin/users", label: "Manage users" },
   { href: "/admin/join-requests", label: "Join requests" },
+  { href: "/admin/channels", label: "Channels" },
   { href: "/admin/label-aliases", label: "Label tags" },
   { href: "/admin/application-phrases", label: "Application phrases" },
 ];
