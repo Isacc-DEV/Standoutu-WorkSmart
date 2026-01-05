@@ -94,6 +94,7 @@ import {
   unpinMessage,
   updateLabelAliasRecord,
   updateProfileRecord,
+  updateUserAvatar,
   updateUserPresence,
   upsertProfileAccount,
 } from "./db";
@@ -2883,6 +2884,38 @@ async function bootstrap() {
       ? sessions.filter((s) => s.bidderUserId === bidderUserId)
       : sessions;
     return filtered;
+  });
+
+  app.post("/users/me/avatar", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.isActive === false) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+
+    const data = await request.file();
+    if (!data) return reply.status(400).send({ message: "No file provided" });
+
+    const buffer = await data.toBuffer();
+    if (buffer.length > 5 * 1024 * 1024) {
+      return reply.status(400).send({ message: "File too large. Max 5MB." });
+    }
+
+    const fileName = data.filename;
+    const mimeType = data.mimetype;
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+    if (!allowedTypes.includes(mimeType)) {
+      return reply.status(400).send({ message: "Image type not supported" });
+    }
+
+    try {
+      const { url } = await uploadToSupabase(buffer, fileName, mimeType);
+      await updateUserAvatar(actor.id, url);
+      const updated = await findUserById(actor.id);
+      return { user: updated, avatarUrl: url };
+    } catch (err) {
+      request.log.error({ err }, "avatar upload failed");
+      return reply.status(500).send({ message: "Avatar upload failed" });
+    }
   });
 
   app.get("/users", async (request, reply) => {
