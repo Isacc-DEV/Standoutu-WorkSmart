@@ -32,6 +32,7 @@ import { uploadFile as uploadToSupabase } from "./supabaseStorage";
 import {
   addMessageReaction,
   closeAssignmentById,
+  deleteCommunityChannel,
   deleteMessage,
   deleteLabelAlias,
   deleteResumeById,
@@ -92,6 +93,7 @@ import {
   removeMessageReaction,
   touchProfileAccount,
   unpinMessage,
+  updateCommunityChannel,
   updateLabelAliasRecord,
   updateProfileRecord,
   updateUserAvatar,
@@ -2081,6 +2083,18 @@ async function bootstrap() {
     return { channels, dms };
   });
 
+  app.get("/community/channels", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can manage channels" });
+    }
+    const channels = await listCommunityChannels();
+    return channels;
+  });
+
   app.post("/community/channels", async (request, reply) => {
     if (forbidObserver(reply, request.authUser)) return;
     const actor = request.authUser;
@@ -2116,6 +2130,69 @@ async function bootstrap() {
       role: "OWNER",
     });
     return created;
+  });
+
+  app.patch("/community/channels/:id", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can manage channels" });
+    }
+    const { id } = request.params as { id: string };
+    const schema = z.object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+    if (body.name === undefined && body.description === undefined) {
+      return reply.status(400).send({ message: "No updates provided" });
+    }
+    const existing = await findCommunityThreadById(id);
+    if (!existing || existing.threadType !== "CHANNEL") {
+      return reply.status(404).send({ message: "Channel not found" });
+    }
+    const nameInput = body.name ?? existing.name ?? "";
+    const name = normalizeChannelName(nameInput);
+    if (!name) {
+      return reply.status(400).send({ message: "Channel name required" });
+    }
+    const nameKey = name.toLowerCase();
+    const conflict = await findCommunityChannelByKey(nameKey);
+    if (conflict && conflict.id !== id) {
+      return reply
+        .status(409)
+        .send({ message: "Channel already exists" });
+    }
+    const description =
+      body.description === undefined
+        ? existing.description ?? null
+        : body.description.trim() || null;
+    const updated = await updateCommunityChannel({
+      id,
+      name,
+      nameKey,
+      description,
+    });
+    return updated ?? reply.status(404).send({ message: "Channel not found" });
+  });
+
+  app.delete("/community/channels/:id", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can manage channels" });
+    }
+    const { id } = request.params as { id: string };
+    const existing = await findCommunityThreadById(id);
+    if (!existing || existing.threadType !== "CHANNEL") {
+      return reply.status(404).send({ message: "Channel not found" });
+    }
+    await deleteCommunityChannel(id);
+    return { status: "deleted", id };
   });
 
   app.post("/community/dms", async (request, reply) => {
