@@ -58,7 +58,6 @@ async function refreshAccessToken(token: AuthToken) {
 
 export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
-  adapter: PrismaAdapter(prisma),
   session: { strategy: 'jwt' },
   providers: [
     AzureADProvider({
@@ -113,6 +112,42 @@ export const authOptions: NextAuthOptions = {
   },
 };
 
-const handler = NextAuth(authOptions);
+let prismaAdapterEnabled: boolean | null = null;
+let authOptionsWithAdapter: NextAuthOptions | null = null;
+
+async function canUsePrismaAdapter() {
+  if (prismaAdapterEnabled !== null) return prismaAdapterEnabled;
+  if (process.env.NEXTAUTH_PRISMA_DISABLED === 'true') {
+    prismaAdapterEnabled = false;
+    return false;
+  }
+  if (!process.env.DATABASE_URL) {
+    prismaAdapterEnabled = false;
+    return false;
+  }
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    prismaAdapterEnabled = true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[next-auth] Prisma adapter disabled: ${message}`);
+    prismaAdapterEnabled = false;
+  }
+  return prismaAdapterEnabled;
+}
+
+async function getAuthOptions() {
+  const useAdapter = await canUsePrismaAdapter();
+  if (!useAdapter) return authOptions;
+  if (!authOptionsWithAdapter) {
+    authOptionsWithAdapter = { ...authOptions, adapter: PrismaAdapter(prisma) };
+  }
+  return authOptionsWithAdapter ?? authOptions;
+}
+
+const handler = async (req: Request) => {
+  const options = await getAuthOptions();
+  return NextAuth(options)(req);
+};
 
 export { handler as GET, handler as POST };
