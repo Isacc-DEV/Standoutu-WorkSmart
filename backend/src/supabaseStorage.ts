@@ -38,6 +38,9 @@ export async function uploadFile(
 }
 
 export async function deleteFile(filePath: string): Promise<void> {
+  if (!supabase) {
+    throw new Error('Supabase is not configured');
+  }
   const { error } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
   if (error) {
     console.error('Supabase delete failed:', error);

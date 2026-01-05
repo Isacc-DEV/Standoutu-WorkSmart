@@ -12,6 +12,7 @@ type WebSocketMessage = {
   deleted?: { messageId: string };
   pinned?: { threadId: string; message: any };
   unpinned?: { threadId: string; messageId: string };
+  read?: { messageId: string; userId: string; readAt: string };
 };
 
 type UseWebSocketProps = {

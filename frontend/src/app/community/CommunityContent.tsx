@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import TopNav from '../../components/TopNav';
-import { API_BASE } from '../../lib/api';
+import { API_BASE, api } from '../../lib/api';
 import { useAuth } from '../../lib/useAuth';
 import { Sidebar } from '../../components/community/Sidebar';
 import { useWebSocket } from '../../components/community/useWebSocket';
@@ -249,6 +249,24 @@ export function CommunityContent() {
         const { messageId } = payload.unpinned;
         setPinnedMessages((prev) => prev.filter((pin) => pin.messageId !== messageId));
       }
+
+      if (payload.type === 'message_read' && payload.read) {
+        const { messageId, userId: readerId } = payload.read;
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (msg.id !== messageId) return msg;
+            const currentReceipts = msg.readReceipts || { totalReaders: 0, userIds: [] };
+            if (currentReceipts.userIds.includes(readerId)) return msg;
+            return {
+              ...msg,
+              readReceipts: {
+                totalReaders: currentReceipts.totalReaders + 1,
+                userIds: [...currentReceipts.userIds, readerId],
+              },
+            };
+          }),
+        );
+      }
     },
     [activeThreadId, user?.id, setMessages, setUnreadMap, setChannels, setDms, setTypingUsers, setPinnedMessages],
   );
@@ -277,6 +295,34 @@ export function CommunityContent() {
     void loadPinnedMessages(activeThreadId, token);
     void markAsRead(activeThreadId, token);
   }, [activeThreadId, token]);
+
+  useEffect(() => {
+    if (!activeThreadId || !token || !user || messages.length === 0) return;
+
+    const timer = setTimeout(async () => {
+      const activeType = channels.find((c) => c.id === activeThreadId)?.threadType || dms.find((d) => d.id === activeThreadId)?.threadType;
+      if (activeType !== 'DM') return;
+
+      const unreadMessages = messages.filter((msg) => {
+        if (msg.senderId === user.id) return false;
+        const readByMe = msg.readReceipts?.userIds?.includes(user.id);
+        return !readByMe;
+      }).map((msg) => msg.id);
+
+      if (unreadMessages.length > 0) {
+        try {
+          await api('/community/messages/mark-read', {
+            method: 'POST',
+            body: JSON.stringify({ messageIds: unreadMessages }),
+          }, token);
+        } catch (error) {
+          console.error('Failed to mark messages as read:', error);
+        }
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [activeThreadId, token, user, messages, channels, dms]);
 
   useEffect(() => {
     function handleClickOutside() {

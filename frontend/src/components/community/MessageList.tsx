@@ -1,14 +1,23 @@
 import { useRef, useEffect, CSSProperties } from "react";
+import { Check, CheckCheck } from "lucide-react";
 import type {
   CommunityMessage,
   TypingIndicator,
   CommunityThreadType,
+  ReadReceiptSummary,
 } from "./types";
 import { AvatarBubble } from "./UIComponents";
 import { formatFullTime, formatBytes, cn } from "./utils";
 
+interface CommunityMessageExtended extends CommunityMessage {
+  attachments?: any[];
+  reactions?: any[];
+  replyPreview?: any;
+  readReceipts?: ReadReceiptSummary;
+}
+
 interface MessageListProps {
-  messages: CommunityMessage[];
+  messages: CommunityMessageExtended[];
   currentTyping: TypingIndicator[];
   activeType: CommunityThreadType | null;
   userId?: string;
@@ -93,6 +102,10 @@ export function MessageList({
           const isDeleted = message.isDeleted;
           const isDm = activeType === "DM";
           const isPinned = pinnedMessageIds.has(message.id);
+          
+          // Read receipt logic: show double tick if any other user has read (excluding sender)
+          const readByOthers = message.readReceipts?.userIds.filter(id => id !== message.senderId) || [];
+          const showDoubleTick = isDm && isSelf && readByOthers.length > 0;
 
           return (
             <div
@@ -146,21 +159,28 @@ export function MessageList({
                   </div>
                 )}
                 {message.body && (
-                  <div
-                    onContextMenu={(e) => onContextMenu(e, message)}
-                    className={`mt-1 rounded-2xl px-4 py-3 text-sm transition ${
-                      hoveredMessageId === message.id
-                        ? "ring-2 ring-slate-200"
-                        : ""
-                    } ${
-                      isDeleted
-                        ? "bg-slate-200 italic text-slate-500"
-                        : isSelf
-                        ? "bg-[var(--community-accent)] text-[var(--community-ink)]"
-                        : "bg-[var(--community-soft)] text-slate-800"
-                    }`}
-                  >
-                    {isDeleted ? "[Message deleted]" : message.body}
+                  <div className="relative">
+                    <div
+                      onContextMenu={(e) => onContextMenu(e, message)}
+                      className={`mt-1 rounded-2xl px-4 py-3 pb-5 text-sm transition ${
+                        hoveredMessageId === message.id
+                          ? "ring-2 ring-slate-200"
+                          : ""
+                      } ${
+                        isDeleted
+                          ? "bg-slate-200 italic text-slate-500"
+                          : isSelf
+                          ? "bg-[var(--community-accent)] text-[var(--community-ink)]"
+                          : "bg-[var(--community-soft)] text-slate-800"
+                      }`}
+                    >
+                      {isDeleted ? "[Message deleted]" : message.body}
+                      {isDm && isSelf && (
+                        <span className="absolute bottom-1.5 right-3 text-blue-600 z-10" title={showDoubleTick ? "Read" : "Sent"}>
+                          {showDoubleTick ? <CheckCheck size={14} strokeWidth={2.5} /> : <Check size={14} strokeWidth={2.5} />}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
                 {message.attachments && message.attachments.length > 0 && (

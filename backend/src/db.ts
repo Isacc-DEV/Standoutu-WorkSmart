@@ -368,6 +368,14 @@ export async function initDb() {
         updated_at TIMESTAMP DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS community_message_read_receipts (
+        id UUID PRIMARY KEY,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        read_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (message_id, user_id)
+      );
+
       ALTER TABLE IF EXISTS users
         ADD COLUMN IF NOT EXISTS avatar_url TEXT;
       ALTER TABLE IF EXISTS "User"
@@ -399,6 +407,8 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_unread_user ON community_unread_messages(user_id);
       CREATE INDEX IF NOT EXISTS idx_unread_thread ON community_unread_messages(thread_id);
       CREATE INDEX IF NOT EXISTS idx_pinned_thread ON community_pinned_messages(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_read_receipts_message ON community_message_read_receipts(message_id);
+      CREATE INDEX IF NOT EXISTS idx_read_receipts_user ON community_message_read_receipts(user_id);
       CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"(email);
       CREATE UNIQUE INDEX IF NOT EXISTS "Account_provider_providerAccountId_key" ON "Account"(provider, "providerAccountId");
       CREATE UNIQUE INDEX IF NOT EXISTS "Session_sessionToken_key" ON "Session"("sessionToken");
@@ -1886,3 +1896,47 @@ export async function listUserPresences(userIds: string[]): Promise<UserPresence
   );
   return rows;
 }
+// Message Read Receipts
+export async function addMessageReadReceipt(messageId: string, userId: string): Promise<void> {
+  await pool.query(
+    `
+      INSERT INTO community_message_read_receipts (id, message_id, user_id, read_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (message_id, user_id) DO UPDATE SET read_at = NOW()
+    `,
+    [randomUUID(), messageId, userId],
+  );
+}
+
+export async function getMessageReadReceipts(messageId: string): Promise<{ totalReaders: number; userIds: string[] }> {
+  const { rows } = await pool.query<{ userId: string }>(
+    `
+      SELECT user_id AS "userId"
+      FROM community_message_read_receipts
+      WHERE message_id = $1
+      ORDER BY read_at ASC
+    `,
+    [messageId],
+  );
+  return {
+    totalReaders: rows.length,
+    userIds: rows.map(r => r.userId),
+  };
+}
+
+export async function bulkAddReadReceipts(messageIds: string[], userId: string): Promise<void> {
+  if (messageIds.length === 0) return;
+  
+  const values = messageIds.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3}, NOW())`).join(', ');
+  const params = messageIds.flatMap(msgId => [randomUUID(), msgId, userId]);
+  
+  await pool.query(
+    `
+      INSERT INTO community_message_read_receipts (id, message_id, user_id, read_at)
+      VALUES ${values}
+      ON CONFLICT (message_id, user_id) DO UPDATE SET read_at = NOW()
+    `,
+    params,
+  );
+}
+
