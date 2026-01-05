@@ -139,11 +139,17 @@ async function api(path: string, init?: RequestInit) {
   if (init?.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers,
+      cache: "no-store",
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Network error contacting API (${API_BASE || "unknown"}): ${message}`);
+  }
   if (!res.ok) {
     if (res.status === 401) {
       if (typeof window !== "undefined") {
@@ -154,7 +160,14 @@ async function api(path: string, init?: RequestInit) {
       throw new Error("Unauthorized");
     }
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    let message = text || res.statusText;
+    try {
+      const parsed = JSON.parse(text) as { message?: string };
+      if (parsed?.message) message = parsed.message;
+    } catch {
+      // Ignore JSON parse errors and show raw text.
+    }
+    throw new Error(message);
   }
   return res.json();
 }
@@ -307,8 +320,10 @@ export default function Page() {
     setShowBaseInfo(false);
   }, [selectedProfileId, user, profiles]);
 
+  const sessionId = session?.id;
+
   useEffect(() => {
-    if (!session) {
+    if (!sessionId) {
       setStreamFrame("");
       setStreamConnected(false);
       setFrameLoaded(false);
@@ -320,7 +335,7 @@ export default function Page() {
     setFrameLoaded(false);
     const base = API_BASE.startsWith("http") ? API_BASE : window.location.origin;
     const wsBase = base.replace(/^http/i, "ws");
-    const ws = new WebSocket(`${wsBase}/ws/browser/${session.id}`);
+    const ws = new WebSocket(`${wsBase}/ws/browser/${sessionId}`);
     ws.onopen = () => setStreamConnected(true);
     ws.onmessage = (evt) => {
       try {
@@ -338,7 +353,7 @@ export default function Page() {
     return () => {
       ws.close();
     };
-  }, [session]);
+  }, [sessionId]);
 
   useEffect(() => {
     setWebviewStatus("idle");
@@ -387,6 +402,17 @@ export default function Page() {
       view.removeEventListener("did-start-loading", handleStart);
     };
   }, [isElectron, browserSrc]);
+
+  useEffect(() => {
+    if (!analyzePopup) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setAnalyzePopup(null);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [analyzePopup]);
 
   const collectWebviewText = useCallback(async (): Promise<string> => {
     const view = webviewRef.current;
@@ -869,7 +895,11 @@ export default function Page() {
       });
     } catch (err) {
       console.error(err);
-      showError("Analyse failed. Backend must be running.");
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "Analyse failed. Please try again.";
+      showError(message);
     } finally {
       setLoadingAction("");
     }
@@ -1132,7 +1162,7 @@ export default function Page() {
                         key={browserSrc}
                         src={browserSrc}
                         partition={webviewPartition}
-                        allowpopups={true}
+                        allowpopups="true"
                         style={{ height: "100%", width: "100%", backgroundColor: "#020617" }}
                       />
                       <div className="absolute top-2 right-3 flex items-center gap-2 text-[11px] text-slate-800">
@@ -1250,38 +1280,20 @@ export default function Page() {
                 disabled={!session || loadingAction === "analyze"}
                 className="w-full rounded-xl bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] shadow-[0_14px_40px_-18px_rgba(94,243,197,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                  {loadingAction === "analyze" ? "Analysing..." : "Run analyse"}
-                </button>
-                <div className="rounded-xl border border-slate-200 bg-slate-100 px-3 py-3 space-y-2">
-                  <div className="flex items-center justify-between text-xs text-slate-800">
-                    <span>Selected resume</span>
-                    <span className="rounded-full bg-[#111d38] px-3 py-1 text-[11px] text-[#5ef3c5]">
-                      {resumeChoice
-                      ? resumes.find((r) => r.id === resumeChoice)?.label ?? "Manual"
-                      : "None"}
-                  </span>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[11px] text-slate-600">Manual select</label>
-                  <select
-                    value={resumeChoice}
-                    onChange={(e) => setResumeChoice(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
-                  >
-                    <option value="">None</option>
-                    {resumes.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <p className="text-[11px] text-slate-600">
-                  {useAiAnalyze
-                    ? "AI mode ranks resumes and lets you pick from cards."
-                    : "Off mode lists top tech stack from the job description."}
-                </p>
-              </div>
+                {loadingAction === "analyze" ? "Analysing..." : "Run analyse"}
+              </button>
+              <button
+                type="button"
+                disabled={!session}
+                className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Generate Tailor Resume
+              </button>
+              <p className="text-[11px] text-slate-600">
+                {useAiAnalyze
+                  ? "AI mode ranks resumes and lets you pick from cards."
+                  : "Off mode lists top tech stack from the job description."}
+              </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
@@ -1361,13 +1373,28 @@ export default function Page() {
       </div>
     </main>
     {analyzePopup ? (
-      <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/10 pt-10 backdrop-blur-sm transition">
-        <div className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white/95 px-6 py-5 shadow-2xl backdrop-blur animate-fade-in">
+      <div
+        className="fixed inset-0 z-50 flex items-start justify-center bg-black/10 pt-10 backdrop-blur-sm transition"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setAnalyzePopup(null);
+        }}
+        role="presentation"
+      >
+        <div
+          className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white/95 px-6 py-5 shadow-2xl backdrop-blur animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
           <div className="flex items-center justify-between pb-2">
             <div className="text-base font-semibold text-slate-900">
               {analyzePopup.mode === "tech" ? "Top tech stack" : "Resume picks"}
             </div>
             <button
+              type="button"
               onClick={() => setAnalyzePopup(null)}
               className="rounded-full px-3 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100"
             >
@@ -1415,6 +1442,7 @@ export default function Page() {
                   const isTop = idx === 0;
                   return (
                     <button
+                      type="button"
                       key={`${item.id}-${idx}`}
                       onClick={() => {
                         setResumeChoice(item.id);
