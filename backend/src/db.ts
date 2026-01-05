@@ -486,6 +486,15 @@ export async function insertUser(user: User) {
   );
 }
 
+export async function updateUserAvatar(userId: string, avatarUrl: string | null) {
+  const normalized =
+    avatarUrl && avatarUrl.toLowerCase() !== 'nope' ? avatarUrl : null;
+  await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [
+    normalized,
+    userId,
+  ]);
+}
+
 export async function insertProfile(profile: {
   id: string;
   displayName: string;
