@@ -31,6 +31,7 @@ import { authGuard, forbidObserver, signToken, verifyToken } from "./auth";
 import { uploadFile as uploadToSupabase } from "./supabaseStorage";
 import {
   addMessageReaction,
+  bulkAddReadReceipts,
   closeAssignmentById,
   deleteMessage,
   deleteLabelAlias,
@@ -49,10 +50,11 @@ import {
   findUserById,
   getCommunityDmThreadSummary,
   getMessageById,
+  getMessageReadReceipts,
   incrementUnreadCount,
   initDb,
+  insertApplication,
   insertProfile,
-  findProfileAccountById,
   listProfileAccountsForUser,
   upsertProfileAccount,
   touchProfileAccount,
@@ -63,9 +65,7 @@ import {
   insertCommunityMessage,
   insertCommunityThread,
   insertCommunityThreadMember,
-  insertLabelAlias,
   insertMessageAttachment,
-  insertProfile,
   insertResumeRecord,
   insertUser,
   isCommunityThreadMember,
@@ -81,7 +81,6 @@ import {
   listMessageAttachments,
   listMessageReactions,
   listPinnedMessages,
-  listProfileAccountsForUser,
   listProfiles,
   listProfilesForBidder,
   listResumesByProfile,
@@ -90,13 +89,11 @@ import {
   pinMessage,
   pool,
   removeMessageReaction,
-  touchProfileAccount,
   unpinMessage,
   updateLabelAliasRecord,
   updateProfileRecord,
   updateUserAvatar,
   updateUserPresence,
-  upsertProfileAccount,
 } from "./db";
 import {
   CANONICAL_LABEL_KEYS,
@@ -2209,6 +2206,7 @@ async function bootstrap() {
       messages.map(async (msg) => {
         const attachments = await listMessageAttachments(msg.id);
         const reactions = await listMessageReactions(msg.id, actor.id);
+        const readReceipts = await getMessageReadReceipts(msg.id);
         let replyPreview = null;
 
         if (msg.replyToMessageId) {
@@ -2228,6 +2226,7 @@ async function bootstrap() {
           attachments,
           reactions,
           replyPreview,
+          readReceipts,
         };
       })
     );
@@ -3142,7 +3141,7 @@ async function bootstrap() {
           type: "message_pinned",
           pinned: {
             threadId: message.threadId,
-            message: pinned.message
+            message: message
           }
         });
       }
@@ -3202,6 +3201,41 @@ async function bootstrap() {
     const thread = await ensureCommunityThreadAccess(id, actor, reply);
     if (!thread) return;
     await markThreadAsRead(id, actor.id);
+    return { success: true };
+  });
+
+  // Community: Mark messages as read (bulk)
+  app.post("/community/messages/mark-read", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) return reply.status(401).send({ message: "Unauthorized" });
+    const schema = z.object({
+      messageIds: z.array(z.string()),
+    });
+    const parsed = schema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ message: "Invalid request" });
+    const { messageIds } = parsed.data;
+    
+    await bulkAddReadReceipts(messageIds, actor.id);
+    
+    // Broadcast read receipts to all clients
+    for (const messageId of messageIds) {
+      const message = await getMessageById(messageId);
+      if (!message) continue;
+      
+      const memberIds = await listCommunityThreadMemberIds(message.threadId);
+      const allowed = new Set(memberIds);
+      
+      communityClients.forEach((c) => {
+        if (allowed.has(c.user.id)) {
+          sendCommunityPayload(c, {
+            type: 'message_read',
+            read: { messageId, userId: actor.id, readAt: new Date().toISOString() },
+          });
+        }
+      });
+    }
+    
     return { success: true };
   });
 

@@ -37,6 +37,11 @@ export type MessageReaction = {
   userIds: string[];
 };
 
+export type ReadReceiptSummary = {
+  totalReaders: number;
+  userIds: string[];
+};
+
 export type ReplyPreview = {
   id: string;
   senderId: string;
@@ -60,6 +65,7 @@ export type CommunityMessage = {
   replyPreview?: ReplyPreview | null;
   attachments?: MessageAttachment[];
   reactions?: MessageReaction[];
+  readReceipts?: ReadReceiptSummary;
 };
 
 export type CommunityOverview = {

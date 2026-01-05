@@ -306,6 +306,18 @@ export interface ThreadMemberWithPermissions {
   joinedAt: string;
 }
 
+export interface MessageReadReceipt {
+  id: string;
+  messageId: string;
+  userId: string;
+  readAt: string;
+}
+
+export interface ReadReceiptSummary {
+  totalReaders: number;
+  userIds: string[];
+}
+
 export interface CommunityMessageExtended extends CommunityMessage {
   attachments?: MessageAttachment[];
   reactions?: ReactionSummary[];
@@ -315,4 +327,5 @@ export interface CommunityMessageExtended extends CommunityMessage {
     senderName?: string | null;
     body: string;
   } | null;
+  readReceipts?: ReadReceiptSummary;
 }

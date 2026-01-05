@@ -1,6 +1,7 @@
-import { ChangeEvent, useRef } from 'react';
+import { ChangeEvent, useRef, useState, useEffect } from 'react';
 import type { CommunityMessage } from './types';
 import { cn } from './utils';
+import { EmojiPicker, parseEmojiShortcuts, getEmojiPreview } from './EmojiPicker';
 
 interface MessageInputProps {
   draftMessage: string;
@@ -50,6 +51,41 @@ export function MessageInput({
   onTyping,
 }: MessageInputProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [emojiPreview, setEmojiPreview] = useState<{ emoji: string; position: number } | null>(null);
+
+  const currentDraft = editingMessage ? editDraft : draftMessage;
+  const handleDraftChange = editingMessage ? onEditDraftChange : onDraftChange;
+
+  useEffect(() => {
+    const preview = getEmojiPreview(currentDraft);
+    setEmojiPreview(preview);
+  }, [currentDraft]);
+
+  const handleEmojiSelect = (emoji: string) => {
+    handleDraftChange(currentDraft + emoji);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    handleDraftChange(value);
+    if (!editingMessage) {
+      onTyping();
+    }
+  };
+
+  const handleSendClick = () => {
+    const processedMessage = parseEmojiShortcuts(currentDraft);
+    handleDraftChange(processedMessage);
+    setTimeout(() => {
+      if (editingMessage) {
+        onEditSave();
+      } else {
+        onSend();
+      }
+    }, 0);
+  };
 
   return (
     <div className="border-t border-slate-100 px-6 py-4">
@@ -137,7 +173,7 @@ export function MessageInput({
           </button>
         </div>
       )}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 relative">
         <input
           ref={fileInputRef}
           type="file"
@@ -149,32 +185,55 @@ export function MessageInput({
           onClick={() => fileInputRef.current?.click()}
           disabled={inputDisabled}
           className="rounded-full border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          title="Attach file"
         >
           📎
         </button>
-        <input
-          value={draftMessage}
-          onChange={(e) => {
-            onDraftChange(e.target.value);
-            onTyping();
-          }}
-          placeholder={activeThreadId ? `Message ${activeLabel}` : 'Select a thread to message'}
-          disabled={inputDisabled}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              onSend();
-            }
-          }}
-          className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300 disabled:bg-slate-100"
-        />
         <button
-          onClick={onSend}
-          disabled={inputDisabled || (!draftMessage.trim() && selectedFiles.length === 0)}
+          ref={emojiButtonRef}
+          onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+          disabled={inputDisabled}
+          className="rounded-full border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          title="Add emoji"
+        >
+          😊
+        </button>
+        {showEmojiPicker && (
+          <EmojiPicker
+            onSelect={handleEmojiSelect}
+            onClose={() => setShowEmojiPicker(false)}
+            buttonRef={emojiButtonRef}
+          />
+        )}
+        <div className="relative flex-1">
+          <input
+            value={currentDraft}
+            onChange={handleInputChange}
+            placeholder={activeThreadId ? `Message ${activeLabel}` : 'Select a thread to message'}
+            disabled={inputDisabled}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendClick();
+              }
+            }}
+            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300 disabled:bg-slate-100"
+          />
+          {emojiPreview && (
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 text-2xl pointer-events-none">
+              {emojiPreview.emoji}
+            </div>
+          )}
+        </div>
+        <button
+          onClick={handleSendClick}
+          disabled={inputDisabled || (!currentDraft.trim() && selectedFiles.length === 0)}
           className="rounded-2xl bg-[var(--community-accent)] px-4 py-3 text-xs font-semibold text-[var(--community-ink)] shadow-[0_10px_25px_-16px_rgba(74,222,128,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 min-w-[80px] flex items-center justify-center"
         >
           {sending || uploading ? (
             <span className="inline-block animate-spin">⏳</span>
+          ) : editingMessage ? (
+            'Save'
           ) : (
             'Send'
           )}
