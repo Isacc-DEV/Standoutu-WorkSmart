@@ -1245,6 +1245,45 @@ export async function listCommunityChannels(): Promise<CommunityThread[]> {
   return rows;
 }
 
+export async function updateCommunityChannel(channel: {
+  id: string;
+  name: string;
+  nameKey: string;
+  description: string | null;
+}): Promise<CommunityThread | undefined> {
+  const { rows } = await pool.query<CommunityThread>(
+    `
+      UPDATE community_threads
+      SET name = $2,
+          name_key = $3,
+          description = $4
+      WHERE id = $1 AND thread_type = 'CHANNEL'
+      RETURNING
+        id,
+        thread_type AS "threadType",
+        name,
+        description,
+        created_by AS "createdBy",
+        is_private AS "isPrivate",
+        created_at AS "createdAt",
+        last_message_at AS "lastMessageAt"
+    `,
+    [channel.id, channel.name, channel.nameKey, channel.description],
+  );
+  return rows[0];
+}
+
+export async function deleteCommunityChannel(id: string): Promise<boolean> {
+  const result = await pool.query(
+    `
+      DELETE FROM community_threads
+      WHERE id = $1 AND thread_type = 'CHANNEL'
+    `,
+    [id],
+  );
+  return result.rowCount > 0;
+}
+
 export async function listCommunityDmThreads(userId: string): Promise<CommunityThreadSummary[]> {
   const { rows } = await pool.query<CommunityThreadSummary & { participants?: CommunityThreadSummary['participants'] }>(
     `

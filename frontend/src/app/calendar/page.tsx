@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { signIn, signOut, useSession } from 'next-auth/react';
 import FullCalendar from '@fullcalendar/react';
-import { DatesSetArg, EventContentArg } from '@fullcalendar/core';
+import { DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -28,6 +28,17 @@ type CalendarEvent = {
   organizer?: string;
   location?: string;
   mailbox?: string;
+};
+
+type EventPopover = {
+  title: string;
+  start?: Date | null;
+  end?: Date | null;
+  isAllDay?: boolean;
+  organizer?: string;
+  location?: string;
+  mailbox?: string;
+  position: { x: number; y: number };
 };
 
 type CalendarEventsResponse = {
@@ -64,6 +75,8 @@ const uniqueMailboxes = (mailboxes: string[]) => {
     });
 };
 
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
 export default function CalendarPage() {
   const router = useRouter();
   const { user, token, loading } = useAuth();
@@ -82,6 +95,7 @@ export default function CalendarPage() {
   const [timezoneId, setTimezoneId] = useState<string>(TIMEZONE_OPTIONS[0].id);
   const [hiddenMailboxes, setHiddenMailboxes] = useState<string[]>([]);
   const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
+  const [eventPopover, setEventPopover] = useState<EventPopover | null>(null);
 
   useEffect(() => {
     if (loading) return;
@@ -91,15 +105,10 @@ export default function CalendarPage() {
   }, [loading, user, token, router]);
 
   const eventContent = (arg: EventContentArg) => {
-    const location = arg.event.extendedProps.location as string | undefined;
-    const organizer = arg.event.extendedProps.organizer as string | undefined;
-    const mailbox = arg.event.extendedProps.mailbox as string | undefined;
+    const label = arg.timeText ? `${arg.timeText} ${arg.event.title}` : arg.event.title;
     return (
-      <div className="flex flex-col gap-0.5 text-[11px] leading-tight text-white">
-        <div className="font-semibold">{arg.event.title}</div>
-        {location ? <div className="text-white/90">{location}</div> : null}
-        {organizer ? <div className="text-white/75">{organizer}</div> : null}
-        {mailbox ? <div className="text-white/70">{mailbox}</div> : null}
+      <div className="w-full truncate text-[11px] font-semibold leading-tight text-white" title={label}>
+        {label}
       </div>
     );
   };
@@ -125,6 +134,12 @@ export default function CalendarPage() {
     () => TIMEZONE_OPTIONS.find((tz) => tz.id === timezoneId) ?? TIMEZONE_OPTIONS[0],
     [timezoneId],
   );
+
+  const scrollTime = useMemo(() => {
+    const now = new Date();
+    const startHour = clamp(now.getHours() - 4, 0, 16);
+    return `${String(startHour).padStart(2, '0')}:00:00`;
+  }, []);
 
   const mailboxCards = useMemo(() => {
     const connected = connectedAccounts.map((account) => ({
@@ -339,10 +354,74 @@ export default function CalendarPage() {
     void fetchEvents(viewRange, 'graph');
   }, [fetchEvents, outlookStatus, viewRange]);
 
+  const formatEventRange = useCallback(
+    (start?: Date | null, end?: Date | null, isAllDay?: boolean) => {
+      if (!start) return '';
+      const tz = selectedTimezone.calendar;
+      const dateFormatter = new Intl.DateTimeFormat('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        timeZone: tz,
+      });
+      if (isAllDay || !end) {
+        return `${dateFormatter.format(start)} (All day)`;
+      }
+      const timeFormatter = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZone: tz,
+      });
+      return `${dateFormatter.format(start)} ${timeFormatter.format(start)} - ${timeFormatter.format(end)}`;
+    },
+    [selectedTimezone.calendar],
+  );
+
+  const handleEventClick = useCallback(
+    (info: EventClickArg) => {
+      info.jsEvent.preventDefault();
+      const { clientX, clientY } = info.jsEvent;
+      const popoverWidth = 320;
+      const popoverHeight = 220;
+      const padding = 16;
+      const maxX = window.innerWidth - popoverWidth - padding;
+      const maxY = window.innerHeight - popoverHeight - padding;
+      const x = clamp(clientX, padding, Math.max(padding, maxX));
+      const y = clamp(clientY, padding, Math.max(padding, maxY));
+      const organizer = info.event.extendedProps.organizer as string | undefined;
+      const location = info.event.extendedProps.location as string | undefined;
+      const mailbox = info.event.extendedProps.mailbox as string | undefined;
+      setEventPopover({
+        title: info.event.title,
+        start: info.event.start,
+        end: info.event.end,
+        isAllDay: info.event.allDay,
+        organizer,
+        location,
+        mailbox,
+        position: { x, y },
+      });
+    },
+    [],
+  );
+
+  const closeEventPopover = useCallback(() => setEventPopover(null), []);
+
   useEffect(() => {
     if (!viewRange || !token) return;
     void fetchEvents(viewRange, 'db');
   }, [fetchEvents, token, viewRange]);
+
+  useEffect(() => {
+    if (!eventPopover) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeEventPopover();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [closeEventPopover, eventPopover]);
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#eaf2ff] via-[#f4f7ff] to-white text-slate-900">
@@ -679,16 +758,18 @@ export default function CalendarPage() {
                   plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
                   initialView="timeGridWeek"
                   headerToolbar={false}
-                  height="auto"
-                  slotMinTime="06:00:00"
-                  slotMaxTime="23:30:00"
+                  height={680}
+                  expandRows={false}
+                  slotMinTime="00:00:00"
+                  slotMaxTime="24:00:00"
+                  scrollTime={scrollTime}
                   allDaySlot
                   weekends
-                  expandRows
                   nowIndicator
                   timeZone={selectedTimezone.calendar}
                   events={calendarEvents}
                   eventContent={eventContent}
+                  eventClick={handleEventClick}
                   eventBackgroundColor="#0284c7"
                   eventBorderColor="#0ea5e9"
                   eventTextColor="#fff"
@@ -700,6 +781,54 @@ export default function CalendarPage() {
           </section>
         </div>
       </div>
+      {eventPopover ? (
+        <div className="fixed inset-0 z-50" onClick={closeEventPopover}>
+          <div className="absolute inset-0 bg-slate-900/10" />
+          <div
+            className="fixed w-80 max-w-[calc(100vw-2rem)] rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
+            style={{ left: eventPopover.position.x, top: eventPopover.position.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Event</div>
+                <div className="text-lg font-semibold text-slate-900">{eventPopover.title}</div>
+              </div>
+              <button
+                type="button"
+                onClick={closeEventPopover}
+                className="rounded-full border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="mt-3 space-y-2 text-sm text-slate-700">
+              <div>
+                <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Time</span>
+                <div>{formatEventRange(eventPopover.start, eventPopover.end, eventPopover.isAllDay)}</div>
+              </div>
+              {eventPopover.location ? (
+                <div>
+                  <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Location</span>
+                  <div className="truncate">{eventPopover.location}</div>
+                </div>
+              ) : null}
+              {eventPopover.organizer ? (
+                <div>
+                  <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Organizer</span>
+                  <div className="truncate">{eventPopover.organizer}</div>
+                </div>
+              ) : null}
+              {eventPopover.mailbox ? (
+                <div>
+                  <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Mailbox</span>
+                  <div className="truncate">{eventPopover.mailbox}</div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
