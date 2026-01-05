@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import {
   ApplicationRecord,
   ApplicationSummary,
@@ -50,12 +50,83 @@ type StoredCalendarEvent = {
   location?: string;
 };
 
+const DEFAULT_ADMIN_DATABASE = 'postgres';
+
+function getDatabaseName(connectionString: string): string | null {
+  try {
+    const url = new URL(connectionString);
+    const pathname = url.pathname.replace(/^\/+/, '');
+    if (!pathname) return null;
+    return decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+}
+
+function buildAdminConnectionString(
+  connectionString: string,
+  adminDatabase: string,
+): string | null {
+  try {
+    const url = new URL(connectionString);
+    url.pathname = `/${adminDatabase}`;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function quoteIdentifier(identifier: string): string {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) return identifier;
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+async function ensureDatabaseExists(connectionString: string) {
+  const databaseName = getDatabaseName(connectionString);
+  if (!databaseName) return;
+  if (databaseName === DEFAULT_ADMIN_DATABASE || databaseName === 'template1') return;
+  const adminConnectionString = buildAdminConnectionString(
+    connectionString,
+    DEFAULT_ADMIN_DATABASE,
+  );
+  if (!adminConnectionString) return;
+  const adminPool = new Pool({ connectionString: adminConnectionString });
+  try {
+    const { rows } = await adminPool.query<{ exists: number }>(
+      'SELECT 1 AS exists FROM pg_database WHERE datname = $1',
+      [databaseName],
+    );
+    if (rows.length > 0) return;
+    const dbName = quoteIdentifier(databaseName);
+    try {
+      await adminPool.query(`CREATE DATABASE ${dbName}`);
+    } catch (err) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code !== '42P04') {
+        throw err;
+      }
+    }
+  } finally {
+    await adminPool.end();
+  }
+}
+
 export const pool = new Pool({
   connectionString: config.DATABASE_URL,
 });
 
 export async function initDb() {
-  const client = await pool.connect();
+  let client: PoolClient;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    const code = (err as { code?: string } | undefined)?.code;
+    if (code !== '3D000') {
+      throw err;
+    }
+    await ensureDatabaseExists(config.DATABASE_URL);
+    client = await pool.connect();
+  }
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
