@@ -4,15 +4,10 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import multipart from "@fastify/multipart";
 import { randomUUID } from "crypto";
-import { promises as fs } from "fs";
-import path from "path";
-import fsSync from "fs";
 import type { WebSocket } from "ws";
 import { z } from "zod";
 import { chromium, Browser, Page, Frame } from "playwright";
 import bcrypt from "bcryptjs";
-import pdfParse from "pdf-parse";
-import { extractRawText } from "mammoth";
 import { config } from "./config";
 import { events, llmSettings, sessions } from "./data";
 import {
@@ -22,10 +17,7 @@ import {
   BaseInfo,
   CommunityMessage,
   LabelAlias,
-  Resume,
-  SessionStatus,
   User,
-  UserRole,
 } from "./types";
 import { authGuard, forbidObserver, signToken, verifyToken } from "./auth";
 import { uploadFile as uploadToSupabase } from "./supabaseStorage";
@@ -36,7 +28,6 @@ import {
   deleteCommunityChannel,
   deleteMessage,
   deleteLabelAlias,
-  deleteResumeById,
   editMessage,
   findActiveAssignmentByProfile,
   findCommunityChannelByKey,
@@ -46,7 +37,6 @@ import {
   findLabelAliasByNormalized,
   findProfileAccountById,
   findProfileById,
-  findResumeById,
   findUserByEmail,
   findUserById,
   getCommunityDmThreadSummary,
@@ -67,7 +57,6 @@ import {
   insertCommunityThread,
   insertCommunityThreadMember,
   insertMessageAttachment,
-  insertResumeRecord,
   insertUser,
   isCommunityThreadMember,
   listApplications,
@@ -84,7 +73,6 @@ import {
   listPinnedMessages,
   listProfiles,
   listProfilesForBidder,
-  listResumesByProfile,
   listUserPresences,
   markThreadAsRead,
   pinMessage,
@@ -114,10 +102,6 @@ import { loadOutlookEvents } from "./msGraph";
 
 const PORT = config.PORT;
 const app = fastify({ logger: config.DEBUG_MODE });
-const PROJECT_ROOT = path.join(__dirname, "..");
-const RESUME_DIR = config.RESUME_DIR || path.join(PROJECT_ROOT, "data", "resumes");
-const HF_TOKEN = config.HF_TOKEN;
-const HF_MODEL = config.HF_MODEL;
 
 const livePages = new Map<
   string,
@@ -353,243 +337,6 @@ function buildAutofillValueMap(
     eeo_disability: "no disability",
   };
   return values;
-}
-
-function sanitizeText(input: string | undefined | null) {
-  if (!input) return "";
-  return input.replace(/\u0000/g, "");
-}
-
-function looksBinary(buf: Buffer) {
-  if (!buf || !buf.length) return false;
-  const sample = buf.subarray(0, Math.min(buf.length, 1024));
-  let nonText = 0;
-  for (const byte of sample) {
-    if (byte === 0) return true;
-    // allow tab/newline/carriage return and basic printable range
-    if (byte < 9 || (byte > 13 && byte < 32) || byte > 126) {
-      nonText += 1;
-    }
-  }
-  return nonText / sample.length > 0.3;
-}
-
-async function extractResumeTextFromFile(filePath: string, fileName?: string) {
-  try {
-    const ext = (fileName ?? path.extname(filePath)).toLowerCase();
-    const buf = await fs.readFile(filePath);
-
-    // Try magic-header detection for PDF when extension is missing/misleading.
-    if (buf.subarray(0, 4).toString() === "%PDF") {
-      try {
-        const parsed = await pdfParse(buf);
-        if (parsed.text?.trim()) return sanitizeText(parsed.text);
-      } catch {
-        // fall through
-      }
-    }
-
-    if (ext === ".txt") {
-      return sanitizeText(buf.toString("utf8"));
-    }
-    if (ext === ".docx") {
-      const res = await extractRawText({ path: filePath });
-      return sanitizeText(res.value ?? "");
-    }
-    if (ext === ".pdf") {
-      const parsed = await pdfParse(buf);
-      return sanitizeText(parsed.text ?? "");
-    }
-    if (looksBinary(buf)) {
-      return "";
-    }
-    return sanitizeText(buf.toString("utf8"));
-  } catch (err) {
-    console.error("extractResumeTextFromFile failed", err);
-    return "";
-  }
-}
-
-async function saveParsedResumeJson(resumeId: string, parsed: unknown) {}
-
-async function tryParseResumeText(
-  resumeId: string,
-  resumeText: string,
-  baseProfile?: BaseInfo
-) {
-  if (!resumeText?.trim()) return undefined;
-  try {
-    const prompt = promptBuilders.buildResumeParsePrompt({
-      resumeId,
-      resumeText,
-      baseProfile,
-    });
-    const parsed = await callPromptPack(prompt);
-    if (parsed?.result) return parsed.result;
-    if (parsed) return parsed;
-  } catch (err) {
-    console.error("LLM resume parse failed", err);
-  }
-  return simpleParseResume(resumeText);
-}
-
-function simpleParseResume(resumeText: string) {
-  const lines = resumeText
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const emailMatch = resumeText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  const phoneMatch = resumeText.match(/(\+?\d[\d\s\-\(\)]{8,})/);
-  const nameLine = lines.find(
-    (l) => l && l.length <= 80 && !l.includes("@") && !/\d/.test(l)
-  );
-  const summary = lines.slice(0, 6).join(" ").slice(0, 600);
-
-  const skillsIdx = lines.findIndex((l) => /skill/i.test(l));
-  const skillsLine =
-    skillsIdx >= 0 ? lines.slice(skillsIdx + 1, skillsIdx + 4).join(", ") : "";
-  const skills = skillsLine
-    .split(/[,;]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 1)
-    .slice(0, 20);
-  const linkedinMatch = resumeText.match(
-    /https?:\/\/(?:www\.)?linkedin\.com\/[^\s)]+/i
-  );
-
-  // Section detection
-  const workIdx = lines.findIndex((l) => /work\s+experience/i.test(l));
-  const eduIdx = lines.findIndex((l) => /education/i.test(l));
-  const endIdx = (idx: number) => {
-    const cutoffs = [workIdx, eduIdx].filter((n) => n >= 0 && n > idx);
-    return cutoffs.length ? Math.min(...cutoffs) : lines.length;
-  };
-
-  function sliceSection(idx: number) {
-    if (idx < 0) return [];
-    return lines.slice(idx + 1, endIdx(idx));
-  }
-
-  const workLines = sliceSection(workIdx);
-  const educationLines = sliceSection(eduIdx);
-
-  function parseWork(blocks: string[]) {
-    const items: any[] = [];
-    let current: any | null = null;
-    const datePattern =
-      /(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s*\d{4})/i;
-    const rangePattern = /(\d{4})\s*[–-]\s*(Present|\d{4})/i;
-    const bulletPattern = /^[\u2022*\-•]+\s*/;
-    for (const l of blocks) {
-      const isBullet = bulletPattern.test(l);
-      if (!isBullet) {
-        // treat as new role/company line when it looks like a heading
-        const looksLikeRole =
-          /engineer|developer|manager|lead|architect|consultant|specialist|director/i.test(
-            l
-          ) ||
-          rangePattern.test(l) ||
-          datePattern.test(l);
-        if (current) items.push(current);
-        if (looksLikeRole) {
-          const dates = l.match(rangePattern) || l.match(datePattern);
-          const parts = l.split(/[–-]/);
-          const titlePart = parts[0]?.trim() ?? "";
-          const companyPart = parts
-            .slice(1)
-            .join("-")
-            .replace(rangePattern, "")
-            .replace(datePattern, "")
-            .trim();
-          current = {
-            company:
-              companyPart ||
-              l.replace(rangePattern, "").replace(datePattern, "").trim(),
-            title: titlePart || "",
-            start_date: dates ? dates[1] ?? "" : "",
-            end_date: dates && dates[2] ? dates[2] : "",
-            location: "",
-            bullets: [] as string[],
-          };
-        } else if (current) {
-          current.company = `${current.company} ${l}`.trim();
-        } else {
-          current = {
-            company: l,
-            title: "",
-            start_date: "",
-            end_date: "",
-            location: "",
-            bullets: [] as string[],
-          };
-        }
-      } else if (current) {
-        current.bullets.push(l.replace(bulletPattern, "").trim());
-      }
-    }
-    if (current) items.push(current);
-    return items.slice(0, 6);
-  }
-
-  function parseEducation(blocks: string[]) {
-    const edu: any[] = [];
-    const degreePattern =
-      /(bachelor|master|mba|phd|b\.sc|m\.sc|bachelor’s|master’s)/i;
-    for (const l of blocks) {
-      if (!l) continue;
-      const degree = (l.match(degreePattern) || [])[0] ?? "";
-      edu.push({
-        degree: degree || "",
-        field: "",
-        start_date: "",
-        end_date: "",
-        details: [l],
-      });
-      if (edu.length >= 4) break;
-    }
-    return edu;
-  }
-
-  const experience = parseWork(workLines.length ? workLines : lines).map(
-    (e) => ({
-      company: e.company || null,
-      title: e.title || null,
-      start_date: e.start_date || null,
-      end_date: e.end_date || null,
-      location: e.location || null,
-      bullets: (e.bullets || []).filter((b: string) => b),
-    })
-  );
-  const education = parseEducation(educationLines);
-
-  return {
-    name: nameLine || "",
-    contact_info: {
-      email: emailMatch?.[0] || null,
-      phone: phoneMatch?.[0]?.trim() || null,
-      location: null,
-      links: {
-        linkedin: linkedinMatch?.[0] || null,
-      },
-    },
-    summary: summary || null,
-    education: education.map((e) => ({
-      degree: e.degree || null,
-      field: e.field || null,
-      start_date: e.start_date || null,
-      end_date: e.end_date || null,
-      details: e.details || [],
-    })),
-    experience: experience.map((e) => ({
-      company: e.company || null,
-      title: e.title || null,
-      start_date: e.start_date || null,
-      end_date: e.end_date || null,
-      location: e.location || null,
-      bullets: e.bullets || [],
-    })),
-    skills,
-  };
 }
 
 async function collectPageFieldsFromFrame(
@@ -1288,24 +1035,6 @@ async function simplePageFill(
   return { filled, suggestions: [], blocked: [] };
 }
 
-async function hydrateResume(resume: Resume, baseProfile?: BaseInfo) {
-  let resumeText = resume.resumeText ?? "";
-  if (!resumeText && resume.filePath) {
-    const resolved = resolveResumePath(resume.filePath);
-    resumeText = await extractResumeTextFromFile(
-      resolved,
-      path.basename(resume.filePath)
-    );
-  }
-  resumeText = sanitizeText(resumeText);
-  const parsedResume = await tryParseResumeText(
-    resume.id,
-    resumeText,
-    baseProfile
-  );
-  return { ...resume, resumeText, parsedResume };
-}
-
 const DEFAULT_AUTOFILL_FIELDS = [
   { field_id: "first_name", label: "First name", type: "text", required: true },
   { field_id: "last_name", label: "Last name", type: "text", required: true },
@@ -1387,38 +1116,8 @@ async function bootstrap() {
     },
   });
   await initDb();
-  await fs.mkdir(RESUME_DIR, { recursive: true });
 
   app.get("/health", async () => ({ status: "ok" }));
-
-  app.get("/sessions/:id/top-resumes", async (request, reply) => {
-    if (forbidObserver(reply, request.authUser)) return;
-    const { id } = request.params as { id: string };
-    const session = sessions.find((s) => s.id === id);
-    if (!session)
-      return reply.status(404).send({ message: "Session not found" });
-
-    const jdText = String(
-      (session.jobContext as any)?.job_description_text ?? ""
-    ).trim();
-    if (!jdText) {
-      return reply
-        .status(400)
-        .send({ message: "Job description missing for this session" });
-    }
-
-    try {
-      const top = await getTopMatchedResumesFromSession(
-        session,
-        jdText,
-        request.log
-      );
-      return top;
-    } catch (err) {
-      request.log.error({ err }, "failed to score resumes");
-      return reply.status(500).send({ message: "Failed to score resumes" });
-    }
-  });
 
   app.post("/auth/login", async (request, reply) => {
     const schema = z.object({
@@ -1509,6 +1208,7 @@ async function bootstrap() {
     const schema = z.object({
       displayName: z.string().min(2),
       baseInfo: z.record(z.any()).optional(),
+      baseResume: z.record(z.any()).optional(),
       firstName: z.string().optional(),
       lastName: z.string().optional(),
       email: z.string().email().optional(),
@@ -1533,6 +1233,7 @@ async function bootstrap() {
     const profileId = randomUUID();
     const now = new Date().toISOString();
     const incomingBase = (body.baseInfo ?? {}) as BaseInfo;
+    const baseResume = (body.baseResume ?? {}) as Record<string, unknown>;
     const baseInfo = mergeBaseInfo(
       {},
       {
@@ -1596,6 +1297,7 @@ async function bootstrap() {
       id: profileId,
       displayName: body.displayName,
       baseInfo,
+      baseResume,
       createdBy: actor.id,
       createdAt: now,
       updatedAt: now,
@@ -1620,16 +1322,19 @@ async function bootstrap() {
     const schema = z.object({
       displayName: z.string().min(2).optional(),
       baseInfo: z.record(z.any()).optional(),
+      baseResume: z.record(z.any()).optional(),
     });
     const body = schema.parse(request.body ?? {});
 
     const incomingBase = (body.baseInfo ?? {}) as BaseInfo;
     const mergedBase = mergeBaseInfo(existing.baseInfo, incomingBase);
+    const baseResume = (body.baseResume ?? existing.baseResume ?? {}) as Record<string, unknown>;
 
     const updatedProfile = {
       ...existing,
       displayName: body.displayName ?? existing.displayName,
       baseInfo: mergedBase,
+      baseResume,
       updatedAt: new Date().toISOString(),
     };
 
@@ -1637,132 +1342,10 @@ async function bootstrap() {
       id: updatedProfile.id,
       displayName: updatedProfile.displayName,
       baseInfo: updatedProfile.baseInfo,
+      baseResume: updatedProfile.baseResume,
     });
     return updatedProfile;
   });
-
-  app.get("/profiles/:id/resumes", async (request, reply) => {
-    if (forbidObserver(reply, request.authUser)) return;
-    const { id } = request.params as { id: string };
-    const profile = await findProfileById(id);
-    if (!profile)
-      return reply.status(404).send({ message: "Profile not found" });
-    return listResumesByProfile(id);
-  });
-
-  app.post("/profiles/:id/resumes", async (request, reply) => {
-    if (forbidObserver(reply, request.authUser)) return;
-    const actor = request.authUser;
-    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
-      return reply
-        .status(403)
-        .send({ message: "Only managers or admins can add resumes" });
-    }
-    const { id } = request.params as { id: string };
-    const profile = await findProfileById(id);
-    if (!profile)
-      return reply.status(404).send({ message: "Profile not found" });
-
-    const schema = z.object({
-      label: z.string().optional(),
-      filePath: z.string().optional(),
-      fileData: z.string().optional(),
-      fileName: z.string().optional(),
-      description: z.string().optional(),
-    });
-    const body = schema.parse(request.body ?? {});
-    const baseLabel =
-      body.label?.trim() ||
-      (body.fileName ? body.fileName.replace(/\.[^/.]+$/, "").trim() : "") ||
-      "";
-    if (baseLabel.length < 2) {
-      return reply
-        .status(400)
-        .send({ message: "Label is required (min 2 chars)" });
-    }
-    if (!body.fileData && !body.filePath) {
-      return reply.status(400).send({ message: "Resume file is required" });
-    }
-    const resumeId = randomUUID();
-    let filePath = body.filePath ?? "";
-    let resumeText = "";
-    let resumeJson: Record<string, unknown> | undefined;
-    let resolvedPath = "";
-    if (body.fileData) {
-      const buffer = Buffer.from(body.fileData, "base64");
-      const ext =
-        body.fileName && path.extname(body.fileName)
-          ? path.extname(body.fileName)
-          : ".pdf";
-      const fileName = `${resumeId}${ext}`;
-      const targetPath = path.join(RESUME_DIR, fileName);
-      await fs.writeFile(targetPath, buffer);
-      filePath = `/data/resumes/${fileName}`;
-      resolvedPath = targetPath;
-    } else if (filePath) {
-      resolvedPath = resolveResumePath(filePath);
-    }
-
-    if (resolvedPath) {
-      resumeText = await extractResumeTextFromFile(
-        resolvedPath,
-        body.fileName ?? path.basename(resolvedPath)
-      );
-      resumeJson = await tryParseResumeText(
-        resumeId,
-        resumeText,
-        profile.baseInfo
-      );
-    }
-    resumeText = sanitizeText(resumeText);
-    const resumeDescription = body.description?.trim() || undefined;
-    const resume = {
-      id: resumeId,
-      profileId: id,
-      label: baseLabel,
-      filePath,
-      resumeText,
-      resumeDescription,
-      resumeJson,
-      createdAt: new Date().toISOString(),
-    };
-    await insertResumeRecord(resume);
-    return { ...resume, resumeJson };
-  });
-
-  app.delete(
-    "/profiles/:profileId/resumes/:resumeId",
-    async (request, reply) => {
-      if (forbidObserver(reply, request.authUser)) return;
-      const actor = request.authUser;
-      if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
-        return reply
-          .status(403)
-          .send({ message: "Only managers or admins can remove resumes" });
-      }
-      const { profileId, resumeId } = request.params as {
-        profileId: string;
-        resumeId: string;
-      };
-      const profile = await findProfileById(profileId);
-      if (!profile)
-        return reply.status(404).send({ message: "Profile not found" });
-      const resume = await findResumeById(resumeId);
-      if (!resume || resume.profileId !== profileId) {
-        return reply.status(404).send({ message: "Resume not found" });
-      }
-      if (resume.filePath) {
-        try {
-          const resolved = resolveResumePath(resume.filePath);
-          if (resolved) await fs.unlink(resolved);
-        } catch {
-          // ignore missing files
-        }
-      }
-      await deleteResumeById(resumeId);
-      return { ok: true };
-    }
-  );
 
   app.get("/calendar/accounts", async (request, reply) => {
     if (forbidObserver(reply, request.authUser)) return;
@@ -1956,27 +1539,6 @@ async function bootstrap() {
       source,
       warning,
     };
-  });
-
-  app.get("/resumes/:id/file", async (request, reply) => {
-    if (forbidObserver(reply, request.authUser)) return;
-    const actor = request.authUser;
-    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
-      return reply
-        .status(403)
-        .send({ message: "Only managers or admins can view resumes" });
-    }
-    const { id } = request.params as { id: string };
-    const resume = await findResumeById(id);
-    if (!resume || !resume.filePath)
-      return reply.status(404).send({ message: "Resume not found" });
-    const resolvedPath = resolveResumePath(resume.filePath);
-    if (!resolvedPath || !fsSync.existsSync(resolvedPath)) {
-      return reply.status(404).send({ message: "File missing" });
-    }
-    reply.header("Content-Type", "application/pdf");
-    const stream = fsSync.createReadStream(resolvedPath);
-    return reply.send(stream);
   });
 
   app.get("/assignments", async (request, reply) => {
@@ -2416,7 +1978,6 @@ async function bootstrap() {
       bidderUserId: z.string(),
       profileId: z.string(),
       url: z.string(),
-      selectedResumeId: z.string().optional(),
     });
     const body = schema.parse(request.body);
     const profileAssignment = await findActiveAssignmentByProfile(
@@ -2446,7 +2007,6 @@ async function bootstrap() {
       url: body.url,
       domain: tryExtractDomain(body.url),
       status: "OPEN",
-      selectedResumeId: body.selectedResumeId,
       startedAt: new Date().toISOString(),
     };
     sessions.unshift(session);
@@ -2549,34 +2109,21 @@ async function bootstrap() {
       };
     }
 
-    const jdText = String(
-      (session.jobContext as any)?.job_description_text ?? ""
-    );
-    const topResumes = jdText
-      ? await getTopMatchedResumesFromSession(session, jdText, request.log)
-      : [];
-    session.recommendedResumeId =
-      topResumes[0]?.id ?? analysis.recommendedResumeId;
     events.push({
       id: randomUUID(),
       sessionId: id,
       eventType: "ANALYZE_DONE",
       payload: {
-        recommendedLabel: topResumes[0]?.title ?? analysis.recommendedLabel,
-        recommendedResumeId: topResumes[0]?.id ?? analysis.recommendedResumeId,
+        recommendedLabel: analysis.recommendedLabel,
+        recommendedResumeId: null,
       },
       createdAt: new Date().toISOString(),
     });
     return {
       mode: "resume",
-      recommendedResumeId: topResumes[0]?.id ?? analysis.recommendedResumeId,
-      recommendedLabel: topResumes[0]?.title ?? analysis.recommendedLabel,
-      ranked: topResumes.map((r, idx) => ({
-        id: r.id,
-        label: r.title,
-        rank: idx + 1,
-        score: r.score,
-      })),
+      recommendedResumeId: null,
+      recommendedLabel: analysis.recommendedLabel,
+      ranked: [],
       scores: {},
       jobContext: session.jobContext,
     };
@@ -2777,7 +2324,6 @@ async function bootstrap() {
     const { id } = request.params as { id: string };
     const body =
       (request.body as {
-        selectedResumeId?: string;
         pageFields?: any[];
         useLlm?: boolean;
       }) ?? {};
@@ -2787,9 +2333,6 @@ async function bootstrap() {
     const profile = await findProfileById(session.profileId);
     if (!profile)
       return reply.status(404).send({ message: "Profile not found" });
-    if (body.selectedResumeId) {
-      session.selectedResumeId = body.selectedResumeId;
-    }
 
     const live = livePages.get(id);
     const page = live?.page;
@@ -2932,8 +2475,7 @@ async function bootstrap() {
         sessionId: id,
         bidderUserId: session.bidderUserId,
         profileId: session.profileId,
-        resumeId:
-          session.selectedResumeId ?? session.recommendedResumeId ?? null,
+        resumeId: null,
         url: session.url ?? "",
         domain: session.domain ?? tryExtractDomain(session.url ?? ""),
         createdAt: new Date().toISOString(),
@@ -3653,239 +3195,6 @@ function buildDemoFillPlan(baseInfo: BaseInfo): FillPlanResult {
   };
 }
 
-function resolveResumePath(p: string) {
-  if (!p) return "";
-  if (path.isAbsolute(p)) {
-    // If an absolute path was previously stored, fall back to the shared resumes directory using the filename.
-    const fileName = path.basename(p);
-    return path.join(RESUME_DIR, fileName);
-  }
-  const normalized = p.replace(/\\/g, "/");
-  if (normalized.startsWith("/data/resumes/")) {
-    const fileName = normalized.split("/").pop() ?? "";
-    return path.join(RESUME_DIR, fileName);
-  }
-  if (normalized.startsWith("/resumes/")) {
-    const fileName = normalized.split("/").pop() ?? "";
-    return path.join(RESUME_DIR, fileName);
-  }
-  const trimmed = normalized.replace(/^\.?\\?\//, "");
-  return path.join(PROJECT_ROOT, trimmed);
-}
-
-bootstrap();
-
-function normalizeScore(parsed: any): number | undefined {
-  const val =
-    typeof parsed === "number"
-      ? parsed
-      : typeof parsed === "string"
-      ? Number(parsed)
-      : typeof parsed?.score === "number"
-      ? parsed.score
-      : typeof parsed?.result?.score === "number"
-      ? parsed.result.score
-      : undefined;
-  if (typeof val === "number" && !Number.isNaN(val) && val >= 0 && val <= 100) {
-    return val;
-  }
-  return undefined;
-}
-
-const STOP_WORDS = new Set([
-  "the",
-  "and",
-  "for",
-  "with",
-  "from",
-  "this",
-  "that",
-  "you",
-  "your",
-  "are",
-  "will",
-  "have",
-  "our",
-  "we",
-  "they",
-  "their",
-  "about",
-  "into",
-  "what",
-  "when",
-  "where",
-  "which",
-  "while",
-  "without",
-  "within",
-  "such",
-  "using",
-  "used",
-  "use",
-  "role",
-  "team",
-  "work",
-  "experience",
-  "skills",
-  "ability",
-  "strong",
-  "including",
-  "include",
-]);
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9+\.#]+/g)
-    .filter((t) => t.length > 2 && !STOP_WORDS.has(t));
-}
-
-function topKeywordsFromJd(jdText: string, limit = 12): string[] {
-  const counts = new Map<string, number>();
-  for (const token of tokenize(jdText)) {
-    counts.set(token, (counts.get(token) ?? 0) + 1);
-  }
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([k]) => k);
-}
-
-function overlapCount(tokens: Set<string>, keywords: Set<string>): number {
-  let count = 0;
-  for (const k of keywords) {
-    if (tokens.has(k)) count += 1;
-  }
-  return count;
-}
-
-async function callHfScore(
-  prompt: string,
-  logger?: any,
-  resumeId?: string
-): Promise<any | undefined> {
-  if (!HF_TOKEN) {
-    logger?.warn({ resumeId }, "hf-score-skip-no-token");
-    return undefined;
-  }
-  try {
-    const res = await fetch(
-      "https://router.huggingface.co/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${HF_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: HF_MODEL,
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 128,
-          temperature: 0.1,
-          top_p: 0.9,
-          n: 1,
-        }),
-      }
-    );
-    const data = (await res.json()) as any;
-    const choiceContent =
-      data?.choices?.[0]?.message?.content ||
-      (Array.isArray(data) && data[0]?.generated_text) ||
-      data?.generated_text ||
-      data?.text;
-    const text =
-      typeof choiceContent === "string" ? choiceContent.trim() : undefined;
-    if (text) {
-      try {
-        return JSON.parse(text);
-      } catch {
-        logger?.warn({ resumeId }, "hf-score-parse-text-failed");
-      }
-    }
-    if (data && typeof data === "object" && !data.error) return data;
-    logger?.warn({ resumeId, data }, "hf-score-unexpected-response");
-  } catch (err) {
-    logger?.error({ resumeId }, "hf-score-call-failed");
-  }
-  return undefined;
-}
-
-async function scoreResumeWithHf(
-  jdText: string,
-  resumeText: string,
-  logger?: any,
-  resumeId?: string,
-  opts?: { title?: string; keywords?: string[] }
-): Promise<number | undefined> {
-  if (!jdText.trim() || !resumeText.trim()) {
-    logger?.warn({ resumeId }, "hf-score-skip-empty");
-    return undefined;
-  }
-  const prompt = `You are a resume matcher. Score how well the resume fits the job.
-Return ONLY valid JSON: {"score": number_between_0_and_100}
-- 100 = perfect fit, 0 = not a fit.
-- Emphasize required skills, title fit, and domain.
-- Ignore formatting; be concise.
-Job Title: ${opts?.title ?? "Unknown"}
-Key skills to emphasize: ${opts?.keywords?.join(", ") || "n/a"}
-Job Description (truncated):
-${jdText.slice(0, 3000)}
-
-Resume (truncated):
-${resumeText.slice(0, 6000)}
-`;
-  try {
-    const parsed =
-      (await callHfScore(prompt, logger, resumeId)) ??
-      (await callPromptPack(prompt));
-    const scoreVal = normalizeScore(parsed);
-    if (typeof scoreVal === "number") return Math.round(scoreVal);
-    logger?.warn({ resumeId, parsed }, "hf-score-parse-failed");
-  } catch {
-    logger?.error({ resumeId }, "hf-score-exception");
-  }
-}
-
-async function getTopMatchedResumesFromSession(
-  session: ApplicationSession,
-  jdText: string,
-  logger: any
-) {
-  const profile = await findProfileById(session.profileId);
-  const resumesForProfile = await listResumesByProfile(session.profileId);
-  const limited = resumesForProfile.slice(0, 200);
-  const keywords = topKeywordsFromJd(jdText);
-  const keywordSet = new Set(keywords);
-  const title = (session.jobContext as any)?.title as string | undefined;
-
-  const scored: { id: string; title: string; score: number; tie: number }[] =
-    [];
-  for (const r of limited) {
-    let hydrated = r;
-    try {
-      hydrated = await hydrateResume(r, profile?.baseInfo);
-    } catch {
-      // ignore hydrate errors, fall back to DB text
-    }
-    const resumeText = hydrated.resumeText ?? "";
-    const hfScore = await scoreResumeWithHf(jdText, resumeText, logger, r.id, {
-      title,
-      keywords,
-    });
-    const finalScore = typeof hfScore === "number" ? hfScore : 0;
-    const resumeTokens = new Set(tokenize(resumeText));
-    const tie = overlapCount(resumeTokens, keywordSet);
-    logger.info({ resumeId: r.id, score: finalScore, tie }, "resume-scored");
-    scored.push({ id: r.id, title: r.label, score: finalScore, tie });
-  }
-  return scored
-    .sort(
-      (a, b) =>
-        b.score - a.score || b.tie - a.tie || a.title.localeCompare(b.title)
-    )
-    .slice(0, 4);
-}
-
 async function startBrowserSession(session: ApplicationSession) {
   const existing = livePages.get(session.id);
   if (existing) {
@@ -3991,3 +3300,8 @@ async function broadcastMessageDelete(threadId: string, messageId: string) {
     }
   });
 }
+
+bootstrap().catch((err) => {
+  app.log.error(err);
+  process.exit(1);
+});

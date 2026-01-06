@@ -87,22 +87,13 @@ export interface Profile {
   id: string;
   displayName: string;
   baseInfo: BaseInfo;
+  baseResume?: Record<string, unknown>;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
   assignedBidderId?: string | null;
   assignedBy?: string | null;
   assignedAt?: string | null;
-}
-
-export interface Resume {
-  id: string;
-  profileId: string;
-  label: string;
-  filePath: string;
-  resumeText?: string;
-  resumeDescription?: string;
-  createdAt: string;
 }
 
 export interface Assignment {
@@ -129,8 +120,6 @@ export interface ApplicationSession {
   url: string;
   domain?: string;
   status: SessionStatus;
-  recommendedResumeId?: string;
-  selectedResumeId?: string;
   jobContext?: Record<string, unknown>;
   formSchema?: Record<string, unknown>;
   fillPlan?: Record<string, unknown>;

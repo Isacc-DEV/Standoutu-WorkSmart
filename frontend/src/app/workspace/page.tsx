@@ -45,20 +45,12 @@ type Profile = {
   assignedBidderId?: string;
 };
 
-type Resume = {
-  id: string;
-  profileId: string;
-  label: string;
-};
-
 type ApplicationSession = {
   id: string;
   bidderUserId: string;
   profileId: string;
   url: string;
   status: string;
-  recommendedResumeId?: string;
-  selectedResumeId?: string;
   jobContext?: Record<string, unknown>;
   fillPlan?: FillPlan;
   startedAt?: string;
@@ -105,21 +97,6 @@ type AutofillResponse = {
 type ApplicationPhraseResponse = {
   phrases: string[];
 };
-
-type AnalyzeResult = {
-  recommendedResumeId?: string;
-  alternatives?: { id: string; label: string }[];
-  jobContext?: Record<string, unknown>;
-  ranked?: { id: string; label: string; rank: number; score?: number }[];
-  recommendedLabel?: string;
-  scores?: Record<string, number>;
-  mode?: "tech" | "resume";
-  techStacks?: { label: string; score?: number }[];
-};
-
-type AnalyzePopupState =
-  | { mode: "tech"; items: { label: string; score?: number }[] }
-  | { mode: "resume"; items: { id: string; label: string; score?: number }[] };
 
 type Metrics = {
   tried: number;
@@ -175,9 +152,7 @@ async function api(path: string, init?: RequestInit) {
 export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [resumes, setResumes] = useState<Resume[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
-  const [resumeChoice, setResumeChoice] = useState<string>("");
   const [url, setUrl] = useState<string>(
     "https://www.wave.com/en/careers/job/5725498004/?source=LinkedIn"
   );
@@ -193,8 +168,6 @@ export default function Page() {
   const [status, setStatus] = useState<string>("Disconnected");
   const [loadingAction, setLoadingAction] = useState<string>("");
   const [streamConnected, setStreamConnected] = useState(false);
-  const [analyzePopup, setAnalyzePopup] = useState<AnalyzePopupState | null>(null);
-  const [useAiAnalyze, setUseAiAnalyze] = useState(false);
   const [showBaseInfo, setShowBaseInfo] = useState(false);
   const [baseInfoView, setBaseInfoView] = useState<BaseInfo>(() => cleanBaseInfo({}));
   const [webviewStatus, setWebviewStatus] = useState<"idle" | "loading" | "ready" | "failed">("idle");
@@ -281,16 +254,6 @@ export default function Page() {
     loadingAction !== "check" &&
     loadingAction !== "go";
 
-  async function loadResumes(profileId: string) {
-    try {
-      const data: Resume[] = await api(`/profiles/${profileId}/resumes`);
-      setResumes(data);
-      setResumeChoice("");
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
   const refreshMetrics = useCallback(
     async (bidderId?: string) => {
       if (!bidderId && !user) return;
@@ -308,7 +271,6 @@ export default function Page() {
 
   useEffect(() => {
     if (!selectedProfileId || !user) return;
-    void loadResumes(selectedProfileId);
     setSession(null);
     setFillPlan(null);
     setCapturedFields([]);
@@ -402,17 +364,6 @@ export default function Page() {
       view.removeEventListener("did-start-loading", handleStart);
     };
   }, [isElectron, browserSrc]);
-
-  useEffect(() => {
-    if (!analyzePopup) return;
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setAnalyzePopup(null);
-      }
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [analyzePopup]);
 
   const collectWebviewText = useCallback(async (): Promise<string> => {
     const view = webviewRef.current;
@@ -752,7 +703,6 @@ export default function Page() {
             bidderUserId: user.id,
             profileId: selectedProfileId,
             url,
-            selectedResumeId: resumeChoice,
           }),
         }),
         CONNECT_TIMEOUT_MS,
@@ -843,68 +793,6 @@ export default function Page() {
     }
   }
 
-  async function handleAnalyze() {
-    if (!session) return;
-    setLoadingAction("analyze");
-    setAnalyzePopup(null);
-    try {
-      const res = await api(`/sessions/${session.id}/analyze`, {
-        method: "POST",
-        body: JSON.stringify({ useAi: useAiAnalyze }),
-      });
-      const result = res as AnalyzeResult;
-      const mode = result.mode ?? (useAiAnalyze ? "resume" : "tech");
-
-      if (mode === "tech") {
-        const techItems =
-          (result.techStacks?.length ? result.techStacks : result.ranked ?? []).slice(0, 4).map((t) => ({
-            label: t.label,
-            score: t.score,
-          })) ?? [];
-        if (techItems.length) {
-          setAnalyzePopup({ mode: "tech", items: techItems });
-        }
-        setSession({
-          ...session,
-          status: "ANALYZED",
-          jobContext: result.jobContext ?? session.jobContext,
-        });
-        return;
-      }
-
-      if (result.recommendedResumeId) {
-        setResumeChoice(result.recommendedResumeId);
-      } else if (result.recommendedLabel) {
-        const match = resumes.find(
-          (r) => r.label.toLowerCase() === result.recommendedLabel?.toLowerCase(),
-        );
-        if (match) setResumeChoice(match.id);
-      }
-      if (result.ranked?.length) {
-        const top = result.ranked.slice(0, 4);
-        if (top.length) {
-          const items = top.map((r) => ({ id: r.id ?? r.label, label: r.label, score: r.score }));
-          setAnalyzePopup({ mode: "resume", items });
-        }
-      }
-      setSession({
-        ...session,
-        status: "ANALYZED",
-        recommendedResumeId: result.recommendedResumeId ?? session.recommendedResumeId,
-        jobContext: result.jobContext ?? session.jobContext,
-      });
-    } catch (err) {
-      console.error(err);
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : "Analyse failed. Please try again.";
-      showError(message);
-    } finally {
-      setLoadingAction("");
-    }
-  }
-
   async function handleAutofill() {
     if (!session) return;
     setLoadingAction("autofill");
@@ -929,7 +817,6 @@ export default function Page() {
       const res = (await api(`/sessions/${session.id}/autofill`, {
         method: "POST",
         body: JSON.stringify({
-          selectedResumeId: resumeChoice || undefined,
           useLlm: useLlmAutofill,
           pageFields: isDesktop ? pageFields : undefined,
         }),
@@ -941,7 +828,6 @@ export default function Page() {
       setSession({
         ...session,
         status: "FILLED",
-        selectedResumeId: resumeChoice || session.selectedResumeId,
       });
     } catch (err) {
       console.error(err);
@@ -968,11 +854,6 @@ export default function Page() {
         const defaultProfileId = normalized[0]?.id ?? "";
         setSelectedProfileId(defaultProfileId);
         void refreshMetrics(user.id);
-        if (defaultProfileId) {
-          void loadResumes(defaultProfileId);
-        } else {
-          setResumes([]);
-        }
       } catch (err) {
         console.error(err);
       }
@@ -1255,48 +1136,6 @@ export default function Page() {
           {/* Right column 25% */}
           <section className="flex flex-col gap-4">
             <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold">Analyse</p>
-                  <span className="text-[11px] text-slate-700">
-                    {useAiAnalyze ? "AI compares resumes" : "Detect tech stack only"}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setUseAiAnalyze((v) => !v)}
-                  className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-800 transition"
-                >
-                  <span className={`flex h-5 w-10 items-center rounded-full ${useAiAnalyze ? "bg-[#5ef3c5]" : "bg-slate-200"}`}>
-                    <span
-                      className={`h-4 w-4 rounded-full bg-white shadow transition ${useAiAnalyze ? "translate-x-5" : "translate-x-1"}`}
-                    />
-                  </span>
-                  {useAiAnalyze ? "On" : "Off"}
-                </button>
-              </div>
-              <button
-                onClick={handleAnalyze}
-                disabled={!session || loadingAction === "analyze"}
-                className="w-full rounded-xl bg-[#4ade80] px-4 py-2 text-sm font-semibold text-[#0b1224] shadow-[0_14px_40px_-18px_rgba(94,243,197,0.8)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loadingAction === "analyze" ? "Analysing..." : "Run analyse"}
-              </button>
-              <button
-                type="button"
-                disabled={!session}
-                className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Generate Tailor Resume
-              </button>
-              <p className="text-[11px] text-slate-600">
-                {useAiAnalyze
-                  ? "AI mode ranks resumes and lets you pick from cards."
-                  : "Off mode lists top tech stack from the job description."}
-              </p>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold">Autofill</p>
                 <span className="text-xs text-slate-700">Hotkey: Ctrl+Shift+F</span>
@@ -1372,112 +1211,6 @@ export default function Page() {
 
       </div>
     </main>
-    {analyzePopup ? (
-      <div
-        className="fixed inset-0 z-50 flex items-start justify-center bg-black/10 pt-10 backdrop-blur-sm transition"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setAnalyzePopup(null);
-        }}
-        role="presentation"
-      >
-        <div
-          className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white/95 px-6 py-5 shadow-2xl backdrop-blur animate-fade-in"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-center justify-between pb-2">
-            <div className="text-base font-semibold text-slate-900">
-              {analyzePopup.mode === "tech" ? "Top tech stack" : "Resume picks"}
-            </div>
-            <button
-              type="button"
-              onClick={() => setAnalyzePopup(null)}
-              className="rounded-full px-3 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100"
-            >
-              Close
-            </button>
-          </div>
-          <div className="space-y-3">
-            {analyzePopup.mode === "tech" ? (
-              <div className="space-y-3">
-                {analyzePopup.items[0] ? (
-                  <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-[#e8fff4] px-5 py-5 shadow-sm">
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="space-y-1">
-                        <div className="text-lg font-semibold text-slate-900">Top Result</div>
-                        <div className="text-sm text-slate-700">Job description focus</div>
-                      </div>
-                      <div className="text-4xl font-bold text-slate-900">{analyzePopup.items[0].label}</div>
-                    </div>
-                    <div className="mt-4 text-sm text-slate-700">
-                      score: {formatScore(analyzePopup.items[0].score)}
-                    </div>
-                  </div>
-                ) : null}
-                <div className="space-y-2">
-                  {analyzePopup.items.slice(1).map((item, idx) => (
-                    <div
-                      key={`${item.label}-${idx}`}
-                      className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
-                    >
-                      <div className="text-sm font-semibold text-slate-900">
-                        {ordinal(idx + 2)}: {item.label}
-                      </div>
-                      <div className="text-xs text-slate-600">score: {formatScore(item.score)}</div>
-                    </div>
-                  ))}
-                  {analyzePopup.items.length < 2 ? (
-                    <div className="text-xs text-slate-600">Not enough signals to show more stacks.</div>
-                  ) : null}
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {analyzePopup.items.map((item, idx) => {
-                  const rankLabel = ordinal(idx + 1);
-                  const isTop = idx === 0;
-                  return (
-                    <button
-                      type="button"
-                      key={`${item.id}-${idx}`}
-                      onClick={() => {
-                        setResumeChoice(item.id);
-                        setAnalyzePopup(null);
-                      }}
-                      className={`group relative flex h-full flex-col justify-between rounded-2xl border px-4 py-4 text-left transition duration-150 ${
-                        isTop
-                          ? "border-slate-900 bg-slate-900 text-white shadow-lg"
-                          : "border-slate-200 bg-white hover:-translate-y-1 hover:shadow"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="text-sm font-semibold leading-tight">
-                          {rankLabel}: {item.label}
-                        </div>
-                        <div
-                          className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
-                            isTop ? "bg-[#5ef3c5] text-slate-900" : "bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          Score {formatScore(item.score)}
-                        </div>
-                      </div>
-                      <div className={`mt-3 text-xs ${isTop ? "text-slate-100" : "text-slate-600"}`}>
-                        Click to select this resume automatically.
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    ) : null}
     </>
   );
 }
@@ -1534,24 +1267,6 @@ function cleanBaseInfo(base: BaseInfo): BaseInfo {
     preferences: base?.preferences ?? {},
     defaultAnswers: base?.defaultAnswers ?? {},
   };
-}
-
-function formatScore(score?: number) {
-  if (typeof score === "number" && Number.isFinite(score)) {
-    return score.toFixed(2);
-  }
-  if (typeof score === "number") return String(score);
-  return "N/A";
-}
-
-function ordinal(n: number) {
-  const mod100 = n % 100;
-  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
-  const mod10 = n % 10;
-  if (mod10 === 1) return `${n}st`;
-  if (mod10 === 2) return `${n}nd`;
-  if (mod10 === 3) return `${n}rd`;
-  return `${n}th`;
 }
 
 function StatTile({

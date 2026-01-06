@@ -16,7 +16,6 @@ import {
   ProfileAccount,
   ProfileAccountWithProfile,
   ReactionSummary,
-  Resume,
   UnreadInfo,
   User,
   UserPresence,
@@ -182,23 +181,13 @@ export async function initDb() {
         id UUID PRIMARY KEY,
         display_name TEXT NOT NULL,
         base_info JSONB DEFAULT '{}'::jsonb,
+        base_resume JSONB DEFAULT '{}'::jsonb,
         created_by UUID,
         assigned_bidder_id UUID REFERENCES users(id),
         assigned_by UUID REFERENCES users(id),
         assigned_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS resumes (
-        id UUID PRIMARY KEY,
-        profile_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
-        label TEXT NOT NULL,
-        file_path TEXT,
-        resume_text TEXT,
-        resume_description TEXT,
-        resume_json JSONB,
-        created_at TIMESTAMP DEFAULT NOW()
       );
 
       CREATE TABLE IF NOT EXISTS sessions (
@@ -437,12 +426,10 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_start ON calendar_events(owner_user_id, start_at);
 
       -- Backfill schema changes at startup to avoid missing migration runs.
-      ALTER TABLE IF EXISTS resumes
-        DROP COLUMN IF EXISTS resume_json;
+      DROP TABLE IF EXISTS resumes;
 
-      ALTER TABLE IF EXISTS resumes
-        ADD COLUMN IF NOT EXISTS resume_description TEXT;
-
+      ALTER TABLE IF EXISTS profiles
+        ADD COLUMN IF NOT EXISTS base_resume JSONB DEFAULT '{}'::jsonb;
       ALTER TABLE IF EXISTS profiles
         ADD COLUMN IF NOT EXISTS assigned_bidder_id UUID REFERENCES users(id);
       ALTER TABLE IF EXISTS profiles
@@ -605,20 +592,22 @@ export async function insertProfile(profile: {
   id: string;
   displayName: string;
   baseInfo: Record<string, unknown>;
+  baseResume?: Record<string, unknown>;
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
 }) {
   await pool.query(
     `
-      INSERT INTO profiles (id, display_name, base_info, created_by, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO profiles (id, display_name, base_info, base_resume, created_by, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (id) DO NOTHING
     `,
     [
       profile.id,
       profile.displayName,
       JSON.stringify(profile.baseInfo ?? {}),
+      JSON.stringify(profile.baseResume ?? {}),
       profile.createdBy ?? null,
       profile.createdAt ?? new Date().toISOString(),
       profile.updatedAt ?? new Date().toISOString(),
@@ -662,6 +651,7 @@ export async function listProfiles(): Promise<Profile[]> {
         id,
         display_name AS "displayName",
         base_info AS "baseInfo",
+        base_resume AS "baseResume",
         created_by AS "createdBy",
         assigned_bidder_id AS "assignedBidderId",
         assigned_by AS "assignedBy",
@@ -682,6 +672,7 @@ export async function listProfilesForBidder(bidderUserId: string): Promise<Profi
         id,
         display_name AS "displayName",
         base_info AS "baseInfo",
+        base_resume AS "baseResume",
         created_by AS "createdBy",
         assigned_bidder_id AS "assignedBidderId",
         assigned_by AS "assignedBy",
@@ -704,6 +695,7 @@ export async function findProfileById(id: string): Promise<Profile | undefined> 
         id,
         display_name AS "displayName",
         base_info AS "baseInfo",
+        base_resume AS "baseResume",
         created_by AS "createdBy",
         assigned_bidder_id AS "assignedBidderId",
         assigned_by AS "assignedBy",
@@ -946,57 +938,26 @@ export async function updateProfileRecord(profile: {
   id: string;
   displayName: string;
   baseInfo: Record<string, unknown>;
+  baseResume?: Record<string, unknown>;
 }) {
   await pool.query(
     `
       UPDATE profiles
       SET display_name = $2,
           base_info = $3,
+          base_resume = $4,
           updated_at = NOW()
       WHERE id = $1
     `,
-    [profile.id, profile.displayName, JSON.stringify(profile.baseInfo ?? {})],
-  );
-}
-
-export async function insertResumeRecord(resume: Resume) {
-  await pool.query(
-    `
-      INSERT INTO resumes (id, profile_id, label, file_path, resume_text, resume_description, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      ON CONFLICT (id) DO NOTHING
-    `,
     [
-      resume.id,
-      resume.profileId,
-      resume.label,
-      resume.filePath,
-      resume.resumeText ?? null,
-      resume.resumeDescription ?? null,
-      resume.createdAt,
+      profile.id,
+      profile.displayName,
+      JSON.stringify(profile.baseInfo ?? {}),
+      JSON.stringify(profile.baseResume ?? {}),
     ],
   );
 }
 
-export async function deleteResumeById(resumeId: string) {
-  await pool.query('DELETE FROM resumes WHERE id = $1', [resumeId]);
-}
-
-export async function listResumesByProfile(profileId: string): Promise<Resume[]> {
-  const { rows } = await pool.query<Resume>(
-    'SELECT id, profile_id as "profileId", label, file_path as "filePath", resume_text as "resumeText", resume_description as "resumeDescription", created_at as "createdAt" FROM resumes WHERE profile_id = $1 ORDER BY created_at DESC',
-    [profileId],
-  );
-  return rows;
-}
-
-export async function findResumeById(resumeId: string): Promise<Resume | undefined> {
-  const { rows } = await pool.query<Resume>(
-    'SELECT id, profile_id as "profileId", label, file_path as "filePath", resume_text as "resumeText", resume_description as "resumeDescription", created_at as "createdAt" FROM resumes WHERE id = $1',
-    [resumeId],
-  );
-  return rows[0];
-}
 
 export async function listAssignments(): Promise<Assignment[]> {
   const { rows } = await pool.query<Assignment>(
@@ -1120,14 +1081,13 @@ export async function listApplications(): Promise<ApplicationSummary[]> {
         a.profile_id AS "profileId",
         p.display_name AS "profileDisplayName",
         a.resume_id AS "resumeId",
-        r.label AS "resumeLabel",
+        NULL::text AS "resumeLabel",
         a.url AS "url",
         a.domain AS "domain",
         a.created_at AS "createdAt"
       FROM applications a
       LEFT JOIN users u ON u.id = a.bidder_user_id
       LEFT JOIN profiles p ON p.id = a.profile_id
-      LEFT JOIN resumes r ON r.id = a.resume_id
       ORDER BY a.created_at DESC
     `,
   );

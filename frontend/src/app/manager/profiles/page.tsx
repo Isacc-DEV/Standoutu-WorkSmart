@@ -1,7 +1,15 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type MouseEventHandler,
+} from "react";
 import { useRouter } from "next/navigation";
-import { api, API_BASE } from "../../../lib/api";
+import { api } from "../../../lib/api";
 import { useAuth } from "../../../lib/useAuth";
 import ManagerShell from "../../../components/ManagerShell";
 
@@ -17,22 +25,50 @@ type BaseInfo = {
   defaultAnswers?: Record<string, string>;
 };
 
+type BaseResume = {
+  Profile?: {
+    name?: string;
+    headline?: string;
+    contact?: {
+      location?: string;
+      email?: string;
+      phone?: string;
+      linkedin?: string;
+    };
+  };
+  summary?: { text?: string };
+  workExperience?: Array<{
+    companyTitle?: string;
+    roleTitle?: string;
+    employmentType?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    bullets?: string[];
+  }>;
+  education?: Array<{
+    institution?: string;
+    degree?: string;
+    field?: string;
+    date?: string;
+    coursework?: string[];
+  }>;
+  skills?: { raw?: string[] };
+};
+
+type ProfileContact = NonNullable<NonNullable<BaseResume["Profile"]>["contact"]>;
+type WorkExperience = NonNullable<BaseResume["workExperience"]>[number];
+type WorkExperienceField = keyof Omit<WorkExperience, "bullets">;
+type EducationEntry = NonNullable<BaseResume["education"]>[number];
+type EducationField = keyof Omit<EducationEntry, "coursework">;
+
 type Profile = {
   id: string;
   displayName: string;
   baseInfo: BaseInfo;
+  baseResume?: BaseResume;
   createdAt: string;
   updatedAt: string;
-};
-
-type Resume = {
-  id: string;
-  profileId: string;
-  label: string;
-  filePath?: string;
-  resumeText?: string;
-  resumeDescription?: string;
-  createdAt: string;
 };
 
 type Assignment = {
@@ -62,6 +98,14 @@ const DEFAULT_SECTION_STATE = {
   workAuth: { show: false, edit: false },
 };
 
+const DEFAULT_BASE_RESUME_SECTIONS = {
+  profile: true,
+  summary: true,
+  work: true,
+  education: true,
+  skills: true,
+};
+
 const srOnly = "absolute -m-px h-px w-px overflow-hidden whitespace-nowrap border-0 p-0";
 
 export default function ManagerProfilesPage() {
@@ -69,23 +113,20 @@ export default function ManagerProfilesPage() {
   const { user, token, loading } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
-  const [resumes, setResumes] = useState<Resume[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [bidders, setBidders] = useState<User[]>([]);
   const [draftBase, setDraftBase] = useState<BaseInfo>({});
-  const [newResumeLabel, setNewResumeLabel] = useState("");
-  const [newResumeDescription, setNewResumeDescription] = useState("");
-  const [newResumeFile, setNewResumeFile] = useState<File | null>(null);
-  const [showResumeModal, setShowResumeModal] = useState(false);
-  const [viewResume, setViewResume] = useState<Resume | null>(null);
-  const [viewUrl, setViewUrl] = useState<string>("");
-  const viewUrlRef = useRef<string>("");
-  const [viewError, setViewError] = useState<string>("");
+  const [baseResumeDraft, setBaseResumeDraft] = useState<BaseResume>(getEmptyBaseResume());
+  const [baseResumeError, setBaseResumeError] = useState("");
+  const [baseResumeEdit, setBaseResumeEdit] = useState(false);
+  const [baseResumeSections, setBaseResumeSections] = useState(DEFAULT_BASE_RESUME_SECTIONS);
+  const [baseResumeWorkOpen, setBaseResumeWorkOpen] = useState<boolean[]>([]);
+  const [baseResumeEducationOpen, setBaseResumeEducationOpen] = useState<boolean[]>([]);
+  const [savingBaseResume, setSavingBaseResume] = useState(false);
+  const baseResumeInputRef = useRef<HTMLInputElement | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [showResumes, setShowResumes] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [savingResumeId, setSavingResumeId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [assignLoading, setAssignLoading] = useState(false);
   const [assignBidderId, setAssignBidderId] = useState<string>("");
@@ -172,16 +213,6 @@ export default function ManagerProfilesPage() {
     }
   }, []);
 
-  const loadResumes = useCallback(async (profileId: string, authToken: string) => {
-    try {
-      const list = await api<Resume[]>(`/profiles/${profileId}/resumes`, undefined, authToken);
-      setResumes(list);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load resumes.");
-    }
-  }, []);
-
   const loadAssignments = useCallback(async (authToken: string) => {
     try {
       const list = await api<Assignment[]>("/assignments", undefined, authToken);
@@ -223,17 +254,30 @@ export default function ManagerProfilesPage() {
   }, [loading, user, token, router, loadProfiles, loadBidders, loadAssignments]);
 
   useEffect(() => {
-    if (!selectedProfile || !token) return;
+    if (!selectedProfile || !token) {
+      setBaseResumeDraft(getEmptyBaseResume());
+      setBaseResumeError("");
+      setBaseResumeEdit(false);
+      setBaseResumeSections(DEFAULT_BASE_RESUME_SECTIONS);
+      setBaseResumeWorkOpen([]);
+      setBaseResumeEducationOpen([]);
+      return;
+    }
+    const normalizedBaseResume = normalizeBaseResume(selectedProfile.baseResume);
     setDraftBase(cleanBaseInfo(selectedProfile.baseInfo));
-    void loadResumes(selectedProfile.id, token);
+    setBaseResumeDraft(normalizedBaseResume);
+    setBaseResumeError("");
+    setBaseResumeEdit(false);
+    setBaseResumeSections(DEFAULT_BASE_RESUME_SECTIONS);
+    setBaseResumeWorkOpen(normalizedBaseResume.workExperience?.map(() => true) ?? []);
+    setBaseResumeEducationOpen(normalizedBaseResume.education?.map(() => true) ?? []);
     setSectionState(DEFAULT_SECTION_STATE);
-    setShowResumes(false);
     if (activeAssignment) {
       setAssignBidderId(activeAssignment.bidderUserId);
     } else if (bidders[0]) {
       setAssignBidderId(bidders[0].id);
     }
-  }, [activeAssignment, bidders, loadResumes, selectedProfile, token]);
+  }, [activeAssignment, bidders, selectedProfile, token]);
 
   async function handleSaveProfile(sectionKey?: SectionKey) {
     if (!selectedProfile || !token) return;
@@ -267,109 +311,330 @@ export default function ManagerProfilesPage() {
     }
   }
 
-  async function handleAddResume() {
-    if (!selectedProfile || !token || !newResumeLabel.trim()) return;
-    setSavingResumeId("new");
+  async function handleImportBaseResume(file: File) {
+    setBaseResumeError("");
+    try {
+      if (!baseResumeEdit) setBaseResumeEdit(true);
+      const text = await readFileAsText(file);
+      const parsed = parseBaseResumeText(text);
+      const normalized = normalizeBaseResume(parsed);
+      setBaseResumeDraft(normalized);
+      setBaseResumeWorkOpen(normalized.workExperience?.map(() => true) ?? []);
+      setBaseResumeEducationOpen(normalized.education?.map(() => true) ?? []);
+    } catch (err) {
+      console.error(err);
+      setBaseResumeError("Invalid JSON file.");
+    }
+  }
+
+  async function handleSaveBaseResume() {
+    if (!selectedProfile || !token) return;
+    setBaseResumeError("");
+    const payload = normalizeBaseResume(baseResumeDraft);
+    setSavingBaseResume(true);
     setError("");
     try {
-      let fileData: string | undefined;
-      let fileName: string | undefined;
-      if (newResumeFile) {
-        fileName = newResumeFile.name;
-        fileData = await readFileAsBase64(newResumeFile);
-      }
-      const created = await api<Resume>(
-        `/profiles/${selectedProfile.id}/resumes`,
+      const updated = await api<Profile>(
+        `/profiles/${selectedProfile.id}`,
         {
-          method: "POST",
+          method: "PATCH",
           body: JSON.stringify({
-            label: newResumeLabel.trim(),
-            description: newResumeDescription.trim() || undefined,
-            fileData,
-            fileName,
+            baseResume: payload,
           }),
         },
         token,
       );
-      setResumes((prev) => [created, ...prev]);
-      setNewResumeLabel("");
-      setNewResumeDescription("");
-      setNewResumeFile(null);
-      setShowResumeModal(false);
+      setProfiles((prev) =>
+        prev.map((p) =>
+          p.id === updated.id
+            ? {
+              ...updated,
+              baseInfo: cleanBaseInfo(updated.baseInfo),
+              baseResume: normalizeBaseResume(updated.baseResume),
+            }
+            : p,
+        ),
+      );
+      setBaseResumeDraft(normalizeBaseResume(updated.baseResume));
+      setBaseResumeEdit(false);
     } catch (err) {
       console.error(err);
-      setError("Failed to add resume.");
+      setBaseResumeError("Could not save base resume.");
     } finally {
-      setSavingResumeId(null);
+      setSavingBaseResume(false);
     }
   }
 
-  useEffect(() => {
-    if (!viewResume || !token) {
-      if (viewUrlRef.current) {
-        URL.revokeObjectURL(viewUrlRef.current);
-        viewUrlRef.current = "";
-      }
-      setViewUrl("");
-      setViewError("");
-      return;
-    }
-    let cancelled = false;
-    const load = async () => {
-      try {
-        setViewError("");
-        setViewUrl("");
-        const res = await fetch(`${API_BASE}/resumes/${viewResume.id}/file`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (!res.ok) {
-          setViewError("Unable to load resume file.");
-          return;
-        }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        if (viewUrlRef.current) {
-          URL.revokeObjectURL(viewUrlRef.current);
-        }
-        viewUrlRef.current = url;
-        setViewUrl(url);
-      } catch (err) {
-        console.error(err);
-        setViewError("Unable to load resume file.");
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-      if (viewUrlRef.current) {
-        URL.revokeObjectURL(viewUrlRef.current);
-        viewUrlRef.current = "";
-      }
-    };
-  }, [viewResume, token]);
+  function handleCancelBaseResume() {
+    setBaseResumeDraft(normalizeBaseResume(selectedProfile?.baseResume));
+    setBaseResumeError("");
+    setBaseResumeEdit(false);
+  }
 
-  async function handleRemoveResume(resumeId: string) {
-    if (!selectedProfile || !token) return;
-    setSavingResumeId(resumeId);
-    setError("");
-    try {
-      await api(`/profiles/${selectedProfile.id}/resumes/${resumeId}`, { method: "DELETE" }, token);
-      setResumes((prev) => prev.filter((r) => r.id !== resumeId));
-    } catch (err) {
-      console.error(err);
-      setError("Failed to remove resume.");
-    } finally {
-      setSavingResumeId(null);
-    }
+  function toggleBaseResumeSection(key: keyof typeof DEFAULT_BASE_RESUME_SECTIONS) {
+    setBaseResumeSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  function toggleWorkExperienceOpen(index: number) {
+    setBaseResumeWorkOpen((prev) => {
+      const next = syncOpenList(prev, baseResumeView.workExperience?.length ?? 0);
+      if (!next.length || index < 0 || index >= next.length) return next;
+      next[index] = !next[index];
+      return next;
+    });
+  }
+
+  function toggleEducationOpen(index: number) {
+    setBaseResumeEducationOpen((prev) => {
+      const next = syncOpenList(prev, baseResumeView.education?.length ?? 0);
+      if (!next.length || index < 0 || index >= next.length) return next;
+      next[index] = !next[index];
+      return next;
+    });
+  }
+
+  function updateBaseResumeProfileField(field: "name" | "headline", value: string) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const profile = next.Profile ?? {};
+      return {
+        ...next,
+        Profile: { ...profile, [field]: value, contact: { ...(profile.contact ?? {}) } },
+      };
+    });
+  }
+
+  function updateBaseResumeContactField(field: keyof ProfileContact, value: string) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const profile = next.Profile ?? {};
+      return {
+        ...next,
+        Profile: {
+          ...profile,
+          contact: { ...(profile.contact ?? {}), [field]: value },
+        },
+      };
+    });
+  }
+
+  function updateBaseResumeSummary(value: string) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      return { ...next, summary: { ...(next.summary ?? {}), text: value } };
+    });
+  }
+
+  function updateWorkExperienceField(index: number, field: WorkExperienceField, value: string) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.workExperience ?? [])];
+      const current = { ...(items[index] ?? getEmptyWorkExperience()) } as WorkExperience;
+      current[field] = value;
+      items[index] = current;
+      return { ...next, workExperience: items };
+    });
+  }
+
+  function addWorkExperience() {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      return {
+        ...next,
+        workExperience: [...(next.workExperience ?? []), getEmptyWorkExperience()],
+      };
+    });
+  }
+
+  function removeWorkExperience(index: number) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.workExperience ?? [])];
+      if (items.length <= 1) {
+        items[0] = getEmptyWorkExperience();
+      } else {
+        items.splice(index, 1);
+      }
+      return { ...next, workExperience: items };
+    });
+  }
+
+  function updateWorkExperienceBullet(index: number, bulletIndex: number, value: string) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.workExperience ?? [])];
+      const current = { ...(items[index] ?? getEmptyWorkExperience()) } as WorkExperience;
+      const bullets = [...(current.bullets ?? [""])];
+      bullets[bulletIndex] = value;
+      current.bullets = bullets;
+      items[index] = current;
+      return { ...next, workExperience: items };
+    });
+  }
+
+  function addWorkExperienceBullet(index: number) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.workExperience ?? [])];
+      const current = { ...(items[index] ?? getEmptyWorkExperience()) } as WorkExperience;
+      const bullets = [...(current.bullets ?? [""]), ""];
+      current.bullets = bullets;
+      items[index] = current;
+      return { ...next, workExperience: items };
+    });
+  }
+
+  function removeWorkExperienceBullet(index: number, bulletIndex: number) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.workExperience ?? [])];
+      const current = { ...(items[index] ?? getEmptyWorkExperience()) } as WorkExperience;
+      const bullets = [...(current.bullets ?? [""])];
+      if (bullets.length <= 1) {
+        bullets[0] = "";
+      } else {
+        bullets.splice(bulletIndex, 1);
+      }
+      current.bullets = bullets;
+      items[index] = current;
+      return { ...next, workExperience: items };
+    });
+  }
+
+  function updateEducationField(index: number, field: EducationField, value: string) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.education ?? [])];
+      const current = { ...(items[index] ?? getEmptyEducation()) } as EducationEntry;
+      current[field] = value;
+      items[index] = current;
+      return { ...next, education: items };
+    });
+  }
+
+  function addEducation() {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      return { ...next, education: [...(next.education ?? []), getEmptyEducation()] };
+    });
+  }
+
+  function removeEducation(index: number) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.education ?? [])];
+      if (items.length <= 1) {
+        items[0] = getEmptyEducation();
+      } else {
+        items.splice(index, 1);
+      }
+      return { ...next, education: items };
+    });
+  }
+
+  function updateEducationCoursework(
+    index: number,
+    courseIndex: number,
+    value: string,
+  ) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.education ?? [])];
+      const current = { ...(items[index] ?? getEmptyEducation()) } as EducationEntry;
+      const coursework = [...(current.coursework ?? [""])];
+      coursework[courseIndex] = value;
+      current.coursework = coursework;
+      items[index] = current;
+      return { ...next, education: items };
+    });
+  }
+
+  function addEducationCoursework(index: number) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.education ?? [])];
+      const current = { ...(items[index] ?? getEmptyEducation()) } as EducationEntry;
+      const coursework = [...(current.coursework ?? [""]), ""];
+      current.coursework = coursework;
+      items[index] = current;
+      return { ...next, education: items };
+    });
+  }
+
+  function removeEducationCoursework(index: number, courseIndex: number) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const items = [...(next.education ?? [])];
+      const current = { ...(items[index] ?? getEmptyEducation()) } as EducationEntry;
+      const coursework = [...(current.coursework ?? [""])];
+      if (coursework.length <= 1) {
+        coursework[0] = "";
+      } else {
+        coursework.splice(courseIndex, 1);
+      }
+      current.coursework = coursework;
+      items[index] = current;
+      return { ...next, education: items };
+    });
+  }
+
+  function updateSkill(index: number, value: string) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const skills = { ...(next.skills ?? {}) };
+      const raw = [...(skills.raw ?? [""])];
+      raw[index] = value;
+      skills.raw = raw;
+      return { ...next, skills };
+    });
+  }
+
+  function addSkill() {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const skills = { ...(next.skills ?? {}) };
+      const raw = [...(skills.raw ?? [""]), ""];
+      skills.raw = raw;
+      return { ...next, skills };
+    });
+  }
+
+  function removeSkill(index: number) {
+    setBaseResumeDraft((prev) => {
+      const next = normalizeBaseResume(prev);
+      const skills = { ...(next.skills ?? {}) };
+      const raw = [...(skills.raw ?? [""])];
+      if (raw.length <= 1) {
+        raw[0] = "";
+      } else {
+        raw.splice(index, 1);
+      }
+      skills.raw = raw;
+      return { ...next, skills };
+    });
   }
 
   const draft = cleanBaseInfo(draftBase);
+  const baseResumeView = normalizeBaseResume(baseResumeDraft);
+  const baseResumeDirty = useMemo(
+    () => serializeBaseResume(baseResumeDraft) !== serializeBaseResume(selectedProfile?.baseResume),
+    [baseResumeDraft, selectedProfile],
+  );
+  const baseResumeLocked = !baseResumeEdit || savingBaseResume;
   const creatingDisabled =
     createLoading || !createForm.displayName.trim() || createForm.displayName.trim().length < 2;
+
+  useEffect(() => {
+    setBaseResumeWorkOpen((prev) =>
+      syncOpenList(prev, baseResumeView.workExperience?.length ?? 0),
+    );
+  }, [baseResumeView.workExperience?.length]);
+
+  useEffect(() => {
+    setBaseResumeEducationOpen((prev) =>
+      syncOpenList(prev, baseResumeView.education?.length ?? 0),
+    );
+  }, [baseResumeView.education?.length]);
 
   return (
     <ManagerShell>
@@ -400,7 +665,6 @@ export default function ManagerProfilesPage() {
                     setSelectedId(p.id);
                     setDetailOpen(true);
                     setSectionState(DEFAULT_SECTION_STATE);
-                    setShowResumes(false);
                   }}
                   className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
                     selectedId === p.id
@@ -660,165 +924,540 @@ export default function ManagerProfilesPage() {
                   <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div className="flex flex-col">
                       <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
-                        Resumes
+                        Base resume
                       </p>
-                      <p className="text-sm text-slate-600">Add or remove profile resumes.</p>
+                      <p className="text-sm text-slate-600">
+                        Edit the base resume details used for tailoring.
+                      </p>
                     </div>
-                  <div className="flex items-center gap-2">
-                      <IconButton onClick={() => setShowResumes((v) => !v)} title={showResumes ? "Hide resumes" : "Show resumes"}>
-                        <TriangleIcon direction={showResumes ? "down" : "left"} />
-                        <span className={srOnly}>{showResumes ? "Hide resumes" : "Show resumes"}</span>
-                      </IconButton>
-                      <IconButton onClick={() => setShowResumeModal(true)} title="Add resume">
-                        <PlusIcon />
-                        <span className={srOnly}>Add resume</span>
-                      </IconButton>
-                  </div>
-                  </div>
-                  {showResumes ? (
-                    <div className="space-y-2">
-                      {resumes.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-600">
-                          No resumes yet.
-                        </div>
-                      ) : (
-                        resumes.map((r) => (
-                          <div
-                            key={r.id}
-                            className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-800"
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        ref={baseResumeInputRef}
+                        type="file"
+                        accept=".json,application/json"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            void handleImportBaseResume(file);
+                          }
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (!baseResumeEdit) setBaseResumeEdit(true);
+                          baseResumeInputRef.current?.click();
+                        }}
+                        disabled={savingBaseResume}
+                        className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Import JSON
+                      </button>
+                      {baseResumeEdit ? (
+                        <>
+                          <button
+                            onClick={handleSaveBaseResume}
+                            disabled={savingBaseResume || !baseResumeDirty}
+                            className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            <button onClick={() => setViewResume(r)} className="text-left">
-                              <div className="font-semibold text-slate-900 underline">{r.label}</div>
-                              {r.resumeDescription ? (
-                                <div className="text-xs text-slate-600 line-clamp-2">{r.resumeDescription}</div>
-                              ) : null}
-                              <div className="text-xs text-slate-500">
-                                Added {new Date(r.createdAt).toLocaleDateString()}
-                              </div>
-                            </button>
-                            <div className="flex items-center gap-3">
-                              <button
-                                onClick={() => setViewResume(r)}
-                                className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100"
-                              >
-                                View
-                              </button>
-                              <button
-                                onClick={() => handleRemoveResume(r.id)}
-                                disabled={savingResumeId === r.id}
-                                className="text-xs text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                {savingResumeId === r.id ? "Removing..." : "Remove"}
-                              </button>
-                            </div>
-                          </div>
-                        ))
+                            {savingBaseResume ? "Saving..." : "Save"}
+                          </button>
+                          <button
+                            onClick={handleCancelBaseResume}
+                            disabled={savingBaseResume}
+                            className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setBaseResumeEdit(true);
+                            setBaseResumeError("");
+                          }}
+                          className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100"
+                        >
+                          Edit
+                        </button>
                       )}
                     </div>
+                  </div>
+                  {baseResumeError ? (
+                    <div className="mb-3 text-xs text-red-600">{baseResumeError}</div>
                   ) : null}
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                          Profile
+                        </p>
+                        <IconButton
+                          onClick={() => toggleBaseResumeSection("profile")}
+                          title={baseResumeSections.profile ? "Hide section" : "Show section"}
+                        >
+                          <TriangleIcon direction={baseResumeSections.profile ? "down" : "left"} />
+                          <span className={srOnly}>
+                            {baseResumeSections.profile ? "Hide profile" : "Show profile"}
+                          </span>
+                        </IconButton>
+                      </div>
+                      {baseResumeSections.profile ? (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <LabeledInput
+                            label="Name"
+                            value={baseResumeView.Profile?.name ?? ""}
+                            onChange={(v) => updateBaseResumeProfileField("name", v)}
+                            disabled={baseResumeLocked}
+                          />
+                          <LabeledInput
+                            label="Headline"
+                            value={baseResumeView.Profile?.headline ?? ""}
+                            onChange={(v) => updateBaseResumeProfileField("headline", v)}
+                            disabled={baseResumeLocked}
+                          />
+                          <LabeledInput
+                            label="Location"
+                            value={baseResumeView.Profile?.contact?.location ?? ""}
+                            onChange={(v) => updateBaseResumeContactField("location", v)}
+                            disabled={baseResumeLocked}
+                          />
+                          <LabeledInput
+                            label="Email"
+                            value={baseResumeView.Profile?.contact?.email ?? ""}
+                            onChange={(v) => updateBaseResumeContactField("email", v)}
+                            disabled={baseResumeLocked}
+                          />
+                          <LabeledInput
+                            label="Phone"
+                            value={baseResumeView.Profile?.contact?.phone ?? ""}
+                            onChange={(v) => updateBaseResumeContactField("phone", v)}
+                            disabled={baseResumeLocked}
+                          />
+                          <LabeledInput
+                            label="LinkedIn"
+                            value={baseResumeView.Profile?.contact?.linkedin ?? ""}
+                            onChange={(v) => updateBaseResumeContactField("linkedin", v)}
+                            disabled={baseResumeLocked}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                          Summary
+                        </p>
+                        <IconButton
+                          onClick={() => toggleBaseResumeSection("summary")}
+                          title={baseResumeSections.summary ? "Hide section" : "Show section"}
+                        >
+                          <TriangleIcon direction={baseResumeSections.summary ? "down" : "left"} />
+                          <span className={srOnly}>
+                            {baseResumeSections.summary ? "Hide summary" : "Show summary"}
+                          </span>
+                        </IconButton>
+                      </div>
+                      {baseResumeSections.summary ? (
+                        <label className="space-y-1">
+                          <span className="text-xs uppercase tracking-[0.18em] text-slate-600">
+                            Text
+                          </span>
+                          <textarea
+                            value={baseResumeView.summary?.text ?? ""}
+                            onChange={(e) => updateBaseResumeSummary(e.target.value)}
+                            rows={4}
+                            disabled={baseResumeLocked}
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                          Work experience
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <IconButton
+                            onClick={() => toggleBaseResumeSection("work")}
+                            title={baseResumeSections.work ? "Hide section" : "Show section"}
+                          >
+                            <TriangleIcon direction={baseResumeSections.work ? "down" : "left"} />
+                            <span className={srOnly}>
+                              {baseResumeSections.work ? "Hide work experience" : "Show work experience"}
+                            </span>
+                          </IconButton>
+                          {baseResumeEdit ? (
+                            <button
+                              onClick={addWorkExperience}
+                              disabled={baseResumeLocked}
+                              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Add
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      {baseResumeSections.work
+                        ? baseResumeView.workExperience?.map((item, index) => {
+                          const isOpen = baseResumeWorkOpen[index] ?? true;
+                          const subLabel = [item.roleTitle, item.companyTitle]
+                            .filter(Boolean)
+                            .join(" - ");
+                          return (
+                            <div
+                              key={`work-${index}`}
+                              className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <IconButton
+                                    onClick={() => toggleWorkExperienceOpen(index)}
+                                    title={isOpen ? "Hide role" : "Show role"}
+                                  >
+                                    <TriangleIcon direction={isOpen ? "down" : "left"} />
+                                    <span className={srOnly}>
+                                      {isOpen ? "Hide role" : "Show role"}
+                                    </span>
+                                  </IconButton>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleWorkExperienceOpen(index)}
+                                    className="flex items-center gap-2 text-left"
+                                    aria-expanded={isOpen}
+                                  >
+                                    <p className="text-sm font-semibold text-slate-800">
+                                      Role {index + 1}
+                                    </p>
+                                    {!isOpen && subLabel ? (
+                                      <span className="text-xs text-slate-500">{subLabel}</span>
+                                    ) : null}
+                                  </button>
+                                </div>
+                                {baseResumeEdit ? (
+                                  <button
+                                    onClick={() => removeWorkExperience(index)}
+                                    disabled={baseResumeLocked}
+                                    className="text-xs text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Remove
+                                  </button>
+                                ) : null}
+                              </div>
+                              {isOpen ? (
+                                <>
+                                  <div className="grid gap-3 md:grid-cols-2">
+                                    <LabeledInput
+                                      label="Company"
+                                      value={item.companyTitle ?? ""}
+                                      onChange={(v) =>
+                                        updateWorkExperienceField(index, "companyTitle", v)
+                                      }
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="Role title"
+                                      value={item.roleTitle ?? ""}
+                                      onChange={(v) =>
+                                        updateWorkExperienceField(index, "roleTitle", v)
+                                      }
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="Employment type"
+                                      value={item.employmentType ?? ""}
+                                      onChange={(v) =>
+                                        updateWorkExperienceField(index, "employmentType", v)
+                                      }
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="Location"
+                                      value={item.location ?? ""}
+                                      onChange={(v) =>
+                                        updateWorkExperienceField(index, "location", v)
+                                      }
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="Start date"
+                                      value={item.startDate ?? ""}
+                                      onChange={(v) =>
+                                        updateWorkExperienceField(index, "startDate", v)
+                                      }
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="End date"
+                                      value={item.endDate ?? ""}
+                                      onChange={(v) =>
+                                        updateWorkExperienceField(index, "endDate", v)
+                                      }
+                                      disabled={baseResumeLocked}
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                                      Bullets
+                                    </p>
+                                    {item.bullets?.map((bullet, bulletIndex) => (
+                                      <div key={`bullet-${bulletIndex}`} className="flex items-center gap-2">
+                                        <input
+                                          value={bullet ?? ""}
+                                          onChange={(e) =>
+                                            updateWorkExperienceBullet(
+                                              index,
+                                              bulletIndex,
+                                              e.target.value,
+                                            )
+                                          }
+                                          disabled={baseResumeLocked}
+                                          className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                                        />
+                                        {baseResumeEdit ? (
+                                          <button
+                                            onClick={() =>
+                                              removeWorkExperienceBullet(index, bulletIndex)
+                                            }
+                                            disabled={baseResumeLocked}
+                                            className="text-xs text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                                          >
+                                            Remove
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                    {baseResumeEdit ? (
+                                      <button
+                                        onClick={() => addWorkExperienceBullet(index)}
+                                        disabled={baseResumeLocked}
+                                        className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        Add bullet
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </>
+                              ) : null}
+                            </div>
+                          );
+                        })
+                        : null}
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                          Education
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <IconButton
+                            onClick={() => toggleBaseResumeSection("education")}
+                            title={baseResumeSections.education ? "Hide section" : "Show section"}
+                          >
+                            <TriangleIcon
+                              direction={baseResumeSections.education ? "down" : "left"}
+                            />
+                            <span className={srOnly}>
+                              {baseResumeSections.education ? "Hide education" : "Show education"}
+                            </span>
+                          </IconButton>
+                          {baseResumeEdit ? (
+                            <button
+                              onClick={addEducation}
+                              disabled={baseResumeLocked}
+                              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Add
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      {baseResumeSections.education
+                        ? baseResumeView.education?.map((item, index) => {
+                          const isOpen = baseResumeEducationOpen[index] ?? true;
+                          const subLabel = [item.degree, item.institution]
+                            .filter(Boolean)
+                            .join(" - ");
+                          return (
+                            <div
+                              key={`education-${index}`}
+                              className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <IconButton
+                                    onClick={() => toggleEducationOpen(index)}
+                                    title={isOpen ? "Hide education" : "Show education"}
+                                  >
+                                    <TriangleIcon direction={isOpen ? "down" : "left"} />
+                                    <span className={srOnly}>
+                                      {isOpen ? "Hide education" : "Show education"}
+                                    </span>
+                                  </IconButton>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleEducationOpen(index)}
+                                    className="flex items-center gap-2 text-left"
+                                    aria-expanded={isOpen}
+                                  >
+                                    <p className="text-sm font-semibold text-slate-800">
+                                      School {index + 1}
+                                    </p>
+                                    {!isOpen && subLabel ? (
+                                      <span className="text-xs text-slate-500">{subLabel}</span>
+                                    ) : null}
+                                  </button>
+                                </div>
+                                {baseResumeEdit ? (
+                                  <button
+                                    onClick={() => removeEducation(index)}
+                                    disabled={baseResumeLocked}
+                                    className="text-xs text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Remove
+                                  </button>
+                                ) : null}
+                              </div>
+                              {isOpen ? (
+                                <>
+                                  <div className="grid gap-3 md:grid-cols-2">
+                                    <LabeledInput
+                                      label="Institution"
+                                      value={item.institution ?? ""}
+                                      onChange={(v) =>
+                                        updateEducationField(index, "institution", v)
+                                      }
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="Degree"
+                                      value={item.degree ?? ""}
+                                      onChange={(v) => updateEducationField(index, "degree", v)}
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="Field"
+                                      value={item.field ?? ""}
+                                      onChange={(v) => updateEducationField(index, "field", v)}
+                                      disabled={baseResumeLocked}
+                                    />
+                                    <LabeledInput
+                                      label="Date"
+                                      value={item.date ?? ""}
+                                      onChange={(v) => updateEducationField(index, "date", v)}
+                                      disabled={baseResumeLocked}
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                                      Coursework
+                                    </p>
+                                    {item.coursework?.map((course, courseIndex) => (
+                                      <div key={`course-${courseIndex}`} className="flex items-center gap-2">
+                                        <input
+                                          value={course ?? ""}
+                                          onChange={(e) =>
+                                            updateEducationCoursework(
+                                              index,
+                                              courseIndex,
+                                              e.target.value,
+                                            )
+                                          }
+                                          disabled={baseResumeLocked}
+                                          className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                                        />
+                                        {baseResumeEdit ? (
+                                          <button
+                                            onClick={() =>
+                                              removeEducationCoursework(index, courseIndex)
+                                            }
+                                            disabled={baseResumeLocked}
+                                            className="text-xs text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                                          >
+                                            Remove
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                    {baseResumeEdit ? (
+                                      <button
+                                        onClick={() => addEducationCoursework(index)}
+                                        disabled={baseResumeLocked}
+                                        className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        Add coursework
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </>
+                              ) : null}
+                            </div>
+                          );
+                        })
+                        : null}
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                          Skills
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <IconButton
+                            onClick={() => toggleBaseResumeSection("skills")}
+                            title={baseResumeSections.skills ? "Hide section" : "Show section"}
+                          >
+                            <TriangleIcon direction={baseResumeSections.skills ? "down" : "left"} />
+                            <span className={srOnly}>
+                              {baseResumeSections.skills ? "Hide skills" : "Show skills"}
+                            </span>
+                          </IconButton>
+                          {baseResumeEdit ? (
+                            <button
+                              onClick={addSkill}
+                              disabled={baseResumeLocked}
+                              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Add
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      {baseResumeSections.skills ? (
+                        <div className="space-y-2">
+                          {baseResumeView.skills?.raw?.map((skill, index) => (
+                            <div key={`skill-${index}`} className="flex items-center gap-2">
+                              <input
+                                value={skill ?? ""}
+                                onChange={(e) => updateSkill(index, e.target.value)}
+                                disabled={baseResumeLocked}
+                                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                              />
+                              {baseResumeEdit ? (
+                                <button
+                                  onClick={() => removeSkill(index)}
+                                  disabled={baseResumeLocked}
+                                  className="text-xs text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  Remove
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
+
               </div>
             ) : null}
           </div>
-
-          {showResumeModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-              <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl text-slate-900">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Add resume</p>
-                    <p className="text-sm text-slate-600">Upload a resume file and label it.</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      if (savingResumeId === "new") return;
-                      setShowResumeModal(false);
-                      setNewResumeLabel("");
-                      setNewResumeDescription("");
-                      setNewResumeFile(null);
-                    }}
-                    className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
-                  >
-                    Close
-                  </button>
-                </div>
-                <div className="mt-4 space-y-3">
-                  <label className="space-y-1 text-sm">
-                    <span className="text-xs uppercase tracking-[0.18em] text-slate-600">Label</span>
-                    <input
-                      value={newResumeLabel}
-                      onChange={(e) => setNewResumeLabel(e.target.value)}
-                      placeholder="e.g. Backend resume"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300"
-                    />
-                  </label>
-                  <div className="space-y-2">
-                    <span className="text-xs uppercase tracking-[0.18em] text-slate-600">File</span>
-                    <label className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-700 hover:border-slate-400 hover:bg-slate-100 transition cursor-pointer">
-                      <span className="text-sm font-semibold">
-                        {newResumeFile ? "Replace resume file" : "Click to choose or drop file"}
-                      </span>
-                      <span className="text-xs text-slate-500">PDF, DOC, DOCX, or TXT up to ~5MB</span>
-                      <input
-                        type="file"
-                        accept=".pdf,.doc,.docx,.txt"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0] ?? null;
-                          setNewResumeFile(file);
-                          if (file && !newResumeLabel.trim()) {
-                            const base = file.name.replace(/\.[^/.]+$/, "");
-                            setNewResumeLabel(base);
-                          }
-                        }}
-                        className="hidden"
-                      />
-                      {newResumeFile && (
-                        <div className="rounded-full bg-white px-3 py-1 text-xs text-slate-800 border border-slate-200">
-                          {newResumeFile.name} ({Math.max(1, Math.round(newResumeFile.size / 1024))} KB)
-                        </div>
-                      )}
-                    </label>
-                  </div>
-                  <label className="space-y-1 text-sm">
-                    <span className="text-xs uppercase tracking-[0.18em] text-slate-600">Description (optional)</span>
-                    <textarea
-                      value={newResumeDescription}
-                      onChange={(e) => setNewResumeDescription(e.target.value)}
-                      placeholder="Short summary of this resume version"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300"
-                      rows={3}
-                    />
-                  </label>
-                </div>
-                <div className="mt-4 flex justify-end gap-2">
-                  <button
-                    onClick={() => {
-                      if (savingResumeId === "new") return;
-                      setShowResumeModal(false);
-                      setNewResumeLabel("");
-                      setNewResumeDescription("");
-                      setNewResumeFile(null);
-                    }}
-                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-800 hover:bg-slate-100"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleAddResume}
-                    disabled={
-                      savingResumeId === "new" ||
-                      !newResumeLabel.trim() ||
-                      newResumeLabel.trim().length < 2 ||
-                      !newResumeFile
-                    }
-                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {savingResumeId === "new" ? "Uploading..." : "Save resume"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {addOpen && (
             <div
@@ -954,65 +1593,6 @@ export default function ManagerProfilesPage() {
                   >
                     {createLoading ? "Creating..." : "Save profile"}
                   </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {viewResume && (
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
-              onClick={() => {
-                setViewResume(null);
-                if (viewUrl) URL.revokeObjectURL(viewUrl);
-                setViewUrl("");
-                setViewError("");
-              }}
-            >
-              <div
-                className="w-full max-w-5xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl text-slate-900"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Resume</p>
-                    <h2 className="text-xl font-semibold text-slate-900">{viewResume.label}</h2>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setViewResume(null);
-                      if (viewUrl) URL.revokeObjectURL(viewUrl);
-                      setViewUrl("");
-                      setViewError("");
-                    }}
-                    className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
-                  >
-                    Close
-                  </button>
-                </div>
-                <div className="mt-4 space-y-3">
-                  {viewResume.resumeDescription ? (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
-                      {viewResume.resumeDescription}
-                    </div>
-                  ) : null}
-                  <div className="h-[520px] overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-                    {viewError ? (
-                      <div className="flex h-full items-center justify-center text-sm text-red-500">
-                        {viewError}
-                      </div>
-                    ) : viewUrl ? (
-                      <iframe
-                        src={viewUrl}
-                        className="h-full w-full bg-white"
-                        title={viewResume.label}
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-sm text-slate-600">
-                        Loading PDF...
-                      </div>
-                    )}
-                  </div>
                 </div>
               </div>
             </div>
@@ -1308,7 +1888,7 @@ function IconButton({
   title,
   children,
 }: {
-  onClick: () => void;
+  onClick: MouseEventHandler<HTMLButtonElement>;
   title: string;
   children: ReactNode;
 }) {
@@ -1316,12 +1896,14 @@ function IconButton({
     <button
       onClick={onClick}
       title={title}
+      type="button"
       className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-800 shadow-sm transition hover:bg-slate-100"
     >
       {children}
     </button>
   );
 }
+
 
 function TriangleIcon({ direction }: { direction: "down" | "left" }) {
   const rotation = direction === "down" ? "rotate-0" : "rotate-90";
@@ -1357,14 +1939,6 @@ function CloseIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current" aria-hidden="true" focusable="false">
       <path d="M6.225 4.811 4.81 6.225 10.586 12l-5.775 5.775 1.414 1.414L12 13.414l5.775 5.775 1.414-1.414L13.414 12l5.775-5.775-1.414-1.414L12 10.586z" />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current" aria-hidden="true" focusable="false">
-      <path d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z" />
     </svg>
   );
 }
@@ -1412,6 +1986,131 @@ function buildBaseInfoPayload(base: BaseInfo): BaseInfo {
   };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function getEmptyWorkExperience(): WorkExperience {
+  return {
+    companyTitle: "",
+    roleTitle: "",
+    employmentType: "",
+    location: "",
+    startDate: "",
+    endDate: "",
+    bullets: [""],
+  };
+}
+
+function getEmptyEducation(): EducationEntry {
+  return {
+    institution: "",
+    degree: "",
+    field: "",
+    date: "",
+    coursework: [""],
+  };
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [""];
+  const cleaned = value.map((item) => cleanString(item as string | number | null));
+  return cleaned.length ? cleaned : [""];
+}
+
+function normalizeWorkExperience(value: unknown): WorkExperience {
+  const source = isPlainObject(value) ? value : {};
+  return {
+    companyTitle: cleanString(source.companyTitle as string | number | null),
+    roleTitle: cleanString(source.roleTitle as string | number | null),
+    employmentType: cleanString(source.employmentType as string | number | null),
+    location: cleanString(source.location as string | number | null),
+    startDate: cleanString(source.startDate as string | number | null),
+    endDate: cleanString(source.endDate as string | number | null),
+    bullets: normalizeStringList(source.bullets),
+  };
+}
+
+function normalizeEducation(value: unknown): EducationEntry {
+  const source = isPlainObject(value) ? value : {};
+  return {
+    institution: cleanString(source.institution as string | number | null),
+    degree: cleanString(source.degree as string | number | null),
+    field: cleanString(source.field as string | number | null),
+    date: cleanString(source.date as string | number | null),
+    coursework: normalizeStringList(source.coursework),
+  };
+}
+
+function getEmptyBaseResume(): BaseResume {
+  return {
+    Profile: {
+      name: "",
+      headline: "",
+      contact: {
+        location: "",
+        email: "",
+        phone: "",
+        linkedin: "",
+      },
+    },
+    summary: { text: "" },
+    workExperience: [getEmptyWorkExperience()],
+    education: [getEmptyEducation()],
+    skills: { raw: [""] },
+  };
+}
+
+function normalizeBaseResume(value?: BaseResume): BaseResume {
+  if (!isPlainObject(value)) return getEmptyBaseResume();
+  const profileInput = isPlainObject(value.Profile) ? value.Profile : {};
+  const contactInput = isPlainObject(profileInput.contact) ? profileInput.contact : {};
+  const summaryInput = isPlainObject(value.summary) ? value.summary : {};
+  const workExperience =
+    Array.isArray(value.workExperience) && value.workExperience.length
+      ? value.workExperience.map(normalizeWorkExperience)
+      : [getEmptyWorkExperience()];
+  const education =
+    Array.isArray(value.education) && value.education.length
+      ? value.education.map(normalizeEducation)
+      : [getEmptyEducation()];
+  const skillsInput = isPlainObject(value.skills) ? value.skills : {};
+
+  return {
+    Profile: {
+      name: cleanString(profileInput.name as string | number | null),
+      headline: cleanString(profileInput.headline as string | number | null),
+      contact: {
+        location: cleanString(contactInput.location as string | number | null),
+        email: cleanString(contactInput.email as string | number | null),
+        phone: cleanString(contactInput.phone as string | number | null),
+        linkedin: cleanString(contactInput.linkedin as string | number | null),
+      },
+    },
+    summary: { text: cleanString(summaryInput.text as string | number | null) },
+    workExperience,
+    education,
+    skills: { raw: normalizeStringList(skillsInput.raw) },
+  };
+}
+
+function parseBaseResumeText(text: string): BaseResume {
+  const parsed = JSON.parse(text) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Base resume JSON must be an object.");
+  }
+  return parsed as BaseResume;
+}
+
+function serializeBaseResume(value?: BaseResume): string {
+  return JSON.stringify(normalizeBaseResume(value));
+}
+
+function syncOpenList(list: boolean[], length: number): boolean[] {
+  if (length <= 0) return [];
+  return Array.from({ length }, (_, index) => list[index] ?? true);
+}
+
 function cleanString(val?: string | number | null) {
   if (typeof val === "number") return String(val);
   if (typeof val === "string") return val.trim();
@@ -1457,10 +2156,12 @@ function LabeledInput({
   label,
   value,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <label className="space-y-1">
@@ -1468,7 +2169,8 @@ function LabeledInput({
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300"
+        disabled={disabled}
+        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
       />
     </label>
   );
@@ -1483,19 +2185,18 @@ function ReadRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function readFileAsBase64(file: File): Promise<string> {
+function readFileAsText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result;
       if (typeof result === "string") {
-        const [, data] = result.split(",");
-        resolve(data ?? "");
+        resolve(result);
       } else {
         reject(new Error("Unable to read file"));
       }
     };
     reader.onerror = reject;
-    reader.readAsDataURL(file);
+    reader.readAsText(file);
   });
 }
