@@ -12,6 +12,7 @@ export default function ManagerShell({ children }: { children: React.ReactNode }
     { href: "/manager/profiles", label: "Profile management" },
     { href: "/manager/bidders", label: "Bidder management" },
     { href: "/manager/applications", label: "Application management" },
+    { href: "/manager/resume-templates", label: "Resume templates" },
   ];
 
   return (

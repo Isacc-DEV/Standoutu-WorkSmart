@@ -8,6 +8,18 @@ import { API_BASE } from "@/lib/api";
 
 const CONNECT_TIMEOUT_MS = 20000;
 const CHECK_TIMEOUT_MS = 10000;
+const TAILOR_TIMEOUT_MS = 20000;
+const EMPTY_RESUME_PREVIEW = `<!doctype html>
+<html>
+<body style="font-family: Arial, sans-serif; padding: 24px; color: #475569;">
+  <div style="max-width: 520px;">
+    <h2 style="margin: 0 0 8px; font-size: 18px;">Resume preview</h2>
+    <p style="margin: 0; font-size: 13px; line-height: 1.5;">
+      Generate a tailored resume to see the template preview.
+    </p>
+  </div>
+</body>
+</html>`;
 type DesktopBridge = {
   isElectron?: boolean;
   openJobWindow?: (url: string) => Promise<{ ok?: boolean; error?: string } | void>;
@@ -38,12 +50,74 @@ type BaseInfo = {
   defaultAnswers?: Record<string, string>;
 };
 
+type BaseResume = {
+  Profile?: {
+    name?: string;
+    headline?: string;
+    contact?: {
+      location?: string;
+      email?: string;
+      phone?: string;
+      linkedin?: string;
+    };
+  };
+  summary?: { text?: string };
+  workExperience?: Array<{
+    companyTitle?: string;
+    roleTitle?: string;
+    employmentType?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    bullets?: string[];
+  }>;
+  education?: Array<{
+    institution?: string;
+    degree?: string;
+    field?: string;
+    date?: string;
+    coursework?: string[];
+  }>;
+  skills?: { raw?: string[] };
+};
+
+type WorkExperience = NonNullable<BaseResume["workExperience"]>[number];
+type EducationEntry = NonNullable<BaseResume["education"]>[number];
+
 type Profile = {
   id: string;
   displayName: string;
   baseInfo: BaseInfo;
+  baseResume?: BaseResume;
   assignedBidderId?: string;
 };
+
+type ResumeTemplate = {
+  id: string;
+  name: string;
+  description?: string | null;
+  html: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type TailorResumeResponse = {
+  content?: string;
+  parsed?: unknown;
+  provider?: string;
+  model?: string;
+};
+
+type BulletAugmentation = {
+  first_company?: string[];
+  second_company?: string[];
+  other_companies?: Array<{
+    experience_index?: number | string;
+    bullets?: string[];
+  }>;
+};
+
+type CompanyBulletMap = Record<string, string[]>;
 
 type ApplicationSession = {
   id: string;
@@ -171,6 +245,30 @@ export default function Page() {
   const [showBaseInfo, setShowBaseInfo] = useState(false);
   const [baseInfoView, setBaseInfoView] = useState<BaseInfo>(() => cleanBaseInfo({}));
   const [webviewStatus, setWebviewStatus] = useState<"idle" | "loading" | "ready" | "failed">("idle");
+  const [resumeTemplates, setResumeTemplates] = useState<ResumeTemplate[]>([]);
+  const [resumeTemplatesLoading, setResumeTemplatesLoading] = useState(false);
+  const [resumeTemplatesError, setResumeTemplatesError] = useState("");
+  const [resumeTemplateId, setResumeTemplateId] = useState("");
+  const [resumePreviewOpen, setResumePreviewOpen] = useState(false);
+  const [jdPreviewOpen, setJdPreviewOpen] = useState(false);
+  const [jdSelectionMode, setJdSelectionMode] = useState(false);
+  const [jdDraft, setJdDraft] = useState("");
+  const [jdCaptureLoading, setJdCaptureLoading] = useState(false);
+  const [jdCaptureError, setJdCaptureError] = useState("");
+  const [tailorLoading, setTailorLoading] = useState(false);
+  const [tailorError, setTailorError] = useState("");
+  const [tailorPdfLoading, setTailorPdfLoading] = useState(false);
+  const [tailorPdfError, setTailorPdfError] = useState("");
+  const [tailoredResume, setTailoredResume] = useState<BaseResume | null>(null);
+  const [llmRawOutput, setLlmRawOutput] = useState("");
+  const [llmMeta, setLlmMeta] = useState<{ provider?: string; model?: string } | null>(null);
+  const [aiProvider, setAiProvider] = useState<"HUGGINGFACE" | "OPENAI" | "GEMINI">(
+    "HUGGINGFACE"
+  );
+  const jdSelectionPollRef = useRef<number | null>(null);
+  const jdDraftRef = useRef("");
+  const jdPreviewOpenRef = useRef(false);
+  const jdSelectionModeRef = useRef(false);
   const webviewRef = useRef<WebviewHandle | null>(null);
   const [isClient, setIsClient] = useState(false);
   const router = useRouter();
@@ -186,6 +284,44 @@ export default function Page() {
 
   useEffect(() => {
     setIsClient(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isClient || typeof window === "undefined") return;
+    const storedProvider = window.localStorage.getItem("smartwork_ai_provider") ?? "";
+    if (
+      storedProvider === "OPENAI" ||
+      storedProvider === "HUGGINGFACE" ||
+      storedProvider === "GEMINI"
+    ) {
+      setAiProvider(storedProvider);
+    }
+  }, [isClient]);
+
+  useEffect(() => {
+    if (!isClient || typeof window === "undefined") return;
+    window.localStorage.setItem("smartwork_ai_provider", aiProvider);
+  }, [aiProvider, isClient]);
+
+  useEffect(() => {
+    jdDraftRef.current = jdDraft;
+  }, [jdDraft]);
+
+  useEffect(() => {
+    jdPreviewOpenRef.current = jdPreviewOpen;
+  }, [jdPreviewOpen]);
+
+  useEffect(() => {
+    jdSelectionModeRef.current = jdSelectionMode;
+  }, [jdSelectionMode]);
+
+  useEffect(() => {
+    return () => {
+      if (jdSelectionPollRef.current !== null) {
+        window.clearInterval(jdSelectionPollRef.current);
+        jdSelectionPollRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -219,6 +355,25 @@ export default function Page() {
     void loadPhrases();
   }, [user]);
 
+  const loadResumeTemplates = useCallback(async () => {
+    setResumeTemplatesLoading(true);
+    setResumeTemplatesError("");
+    try {
+      const list = (await api("/resume-templates")) as ResumeTemplate[];
+      setResumeTemplates(list);
+    } catch (err) {
+      console.error(err);
+      setResumeTemplatesError("Failed to load resume templates.");
+    } finally {
+      setResumeTemplatesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user || user.role === "OBSERVER") return;
+    void loadResumeTemplates();
+  }, [user, loadResumeTemplates]);
+
   const desktopBridge: DesktopBridge | undefined =
     isClient && typeof window !== "undefined"
       ? (window as unknown as { smartwork?: DesktopBridge }).smartwork
@@ -229,6 +384,22 @@ export default function Page() {
     () => profiles.find((p) => p.id === selectedProfileId),
     [profiles, selectedProfileId]
   );
+  const baseResumeView = useMemo(
+    () => normalizeBaseResume(selectedProfile?.baseResume),
+    [selectedProfile]
+  );
+  const selectedTemplate = useMemo(
+    () => resumeTemplates.find((template) => template.id === resumeTemplateId),
+    [resumeTemplates, resumeTemplateId]
+  );
+  const resumePreviewHtml = useMemo(() => {
+    if (!selectedTemplate || !tailoredResume) return "";
+    return renderResumeTemplate(selectedTemplate.html, tailoredResume);
+  }, [selectedTemplate, tailoredResume]);
+  const resumePreviewDoc = useMemo(() => {
+    const html = resumePreviewHtml.trim();
+    return html ? html : EMPTY_RESUME_PREVIEW;
+  }, [resumePreviewHtml]);
 
   const appliedPct = metrics ? `${metrics.appliedPercentage}%` : "0%";
   const monthlyApplied = metrics?.monthlyApplied ?? 0;
@@ -281,6 +452,28 @@ export default function Page() {
     setBaseInfoView(cleanBaseInfo(base ?? {}));
     setShowBaseInfo(false);
   }, [selectedProfileId, user, profiles]);
+
+  useEffect(() => {
+    setTailoredResume(null);
+    setTailorError("");
+    setTailorPdfError("");
+    setResumePreviewOpen(false);
+    setJdPreviewOpen(false);
+    setJdDraft("");
+    setJdCaptureError("");
+    setLlmRawOutput("");
+    setLlmMeta(null);
+  }, [selectedProfileId]);
+
+  useEffect(() => {
+    if (!resumeTemplates.length) {
+      setResumeTemplateId("");
+      return;
+    }
+    if (!resumeTemplateId || !resumeTemplates.some((t) => t.id === resumeTemplateId)) {
+      setResumeTemplateId(resumeTemplates[0].id);
+    }
+  }, [resumeTemplates, resumeTemplateId]);
 
   const sessionId = session?.id;
 
@@ -837,6 +1030,317 @@ export default function Page() {
     }
   }
 
+  const stopJdSelectionPolling = useCallback(() => {
+    if (jdSelectionPollRef.current !== null) {
+      window.clearInterval(jdSelectionPollRef.current);
+      jdSelectionPollRef.current = null;
+    }
+  }, []);
+
+  const startJdSelectionPolling = useCallback(() => {
+    if (jdSelectionPollRef.current !== null) {
+      window.clearInterval(jdSelectionPollRef.current);
+    }
+    jdSelectionPollRef.current = window.setInterval(async () => {
+      if (!jdSelectionModeRef.current) return;
+      const view = webviewRef.current;
+      if (!view) return;
+      try {
+        const result = await view.executeJavaScript(
+          "window.__smartworkSelectionText || ''",
+          true
+        );
+        if (typeof result !== "string") return;
+        const text = result.trim();
+        if (!text) return;
+        if (!jdPreviewOpenRef.current) {
+          if (text !== jdDraftRef.current) {
+            setJdDraft(text);
+          }
+          setJdPreviewOpen(true);
+        }
+      } catch {
+        // ignore selection polling errors
+      }
+    }, 600);
+  }, []);
+
+  const installJdSelectionCapture = useCallback(async () => {
+    const view = webviewRef.current;
+    if (!view) return;
+    const script = `(() => {
+      try {
+        if (window.__smartworkSelectionCapture) return true;
+        window.__smartworkSelectionCapture = true;
+        window.__smartworkSelectionText = window.__smartworkSelectionText || '';
+        const capture = () => {
+          try {
+            const selection = window.getSelection ? window.getSelection().toString() : '';
+            const text = selection ? selection.trim() : '';
+            if (text) window.__smartworkSelectionText = text;
+          } catch {
+            /* ignore */
+          }
+        };
+        document.addEventListener('mouseup', capture);
+        document.addEventListener('keyup', capture);
+
+        const attachFrame = (frame) => {
+          try {
+            const doc = frame.contentDocument;
+            if (!doc) return;
+            doc.addEventListener('mouseup', capture);
+            doc.addEventListener('keyup', capture);
+          } catch {
+            /* ignore */
+          }
+        };
+        Array.from(document.querySelectorAll('iframe')).forEach(attachFrame);
+        const obs = new MutationObserver((mutations) => {
+          for (const m of mutations) {
+            for (const node of Array.from(m.addedNodes || [])) {
+              if (node && node.tagName && node.tagName.toLowerCase() === 'iframe') {
+                attachFrame(node);
+              }
+            }
+          }
+        });
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+        window.__smartworkSelectionClear = () => {
+          try {
+            window.__smartworkSelectionText = '';
+            const sel = window.getSelection && window.getSelection();
+            if (sel && sel.removeAllRanges) sel.removeAllRanges();
+          } catch {
+            /* ignore */
+          }
+        };
+        return true;
+      } catch {
+        return false;
+      }
+    })()`;
+    await view.executeJavaScript(script, true);
+  }, []);
+
+  const clearJdSelection = useCallback(async () => {
+    const view = webviewRef.current;
+    if (!view) return;
+    const script = `(() => {
+      try {
+        if (typeof window.__smartworkSelectionClear === 'function') {
+          window.__smartworkSelectionClear();
+        } else {
+          window.__smartworkSelectionText = '';
+          const sel = window.getSelection && window.getSelection();
+          if (sel && sel.removeAllRanges) sel.removeAllRanges();
+        }
+      } catch {
+        /* ignore */
+      }
+      return true;
+    })()`;
+    await view.executeJavaScript(script, true);
+  }, []);
+
+  async function handleGenerateResume() {
+    if (!selectedProfile || !selectedProfileId) {
+      showError("Select a profile before generating a resume.");
+      return;
+    }
+    if (!isElectron) {
+      showError("Generate resume is only available in the desktop app.");
+      return;
+    }
+    if (!webviewRef.current) {
+      showError("Embedded browser is not ready yet. Try again in a moment.");
+      return;
+    }
+    if (webviewStatus === "failed") {
+      showError("Embedded browser failed to load. Try again or open in a browser tab.");
+      return;
+    }
+    setJdSelectionMode(true);
+    jdSelectionModeRef.current = true;
+    setJdPreviewOpen(false);
+    setJdCaptureError("");
+    setJdDraft("");
+    setJdCaptureLoading(true);
+    try {
+      await installJdSelectionCapture();
+      startJdSelectionPolling();
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : "Selection mode failed.";
+      setJdCaptureError(message);
+    } finally {
+      setJdCaptureLoading(false);
+    }
+  }
+
+  function handleCancelJd() {
+    stopJdSelectionPolling();
+    setJdSelectionMode(false);
+    jdSelectionModeRef.current = false;
+    setJdPreviewOpen(false);
+    setJdCaptureError("");
+    setJdDraft("");
+  }
+
+  async function handleReselectJd() {
+    setJdCaptureError("");
+    setJdDraft("");
+    setJdPreviewOpen(false);
+    await clearJdSelection();
+  }
+
+  async function handleConfirmJd() {
+    if (!jdDraft.trim()) {
+      setJdCaptureError("Job description is empty.");
+      return;
+    }
+    stopJdSelectionPolling();
+    setJdSelectionMode(false);
+    jdSelectionModeRef.current = false;
+    setResumePreviewOpen(true);
+    setJdPreviewOpen(false);
+    if (!resumeTemplates.length && !resumeTemplatesLoading) {
+      void loadResumeTemplates();
+    }
+    setTailorError("");
+    setTailorPdfError("");
+    setLlmRawOutput("");
+    setLlmMeta(null);
+    setTailorLoading(true);
+    try {
+      const baseResume = baseResumeView;
+      const baseResumeText = JSON.stringify(baseResume, null, 2);
+      const payload: Record<string, unknown> = {
+        jobDescriptionText: jdDraft.trim(),
+        baseResume,
+        baseResumeText,
+        provider: aiProvider,
+      };
+      const response = (await api("/llm/tailor-resume", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      })) as TailorResumeResponse;
+      setLlmRawOutput(response.content ?? "");
+      setLlmMeta({ provider: response.provider, model: response.model });
+      const parsed = extractTailorPayload(response);
+      if (!parsed) {
+        throw new Error("LLM did not return JSON output.");
+      }
+      const patchCandidate = selectResumePatch(parsed);
+      const nextResume = isBulletAugmentation(patchCandidate)
+        ? applyBulletAugmentation(baseResume, patchCandidate)
+        : isCompanyBulletMap(patchCandidate)
+        ? applyCompanyBulletMap(baseResume, patchCandidate)
+        : mergeResumeData(baseResume, normalizeResumePatch(patchCandidate));
+      const normalized = normalizeBaseResume(nextResume);
+      setTailoredResume(normalized);
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : "Resume generation failed.";
+      setTailorError(message);
+    } finally {
+      setTailorLoading(false);
+    }
+  }
+
+  async function handleRegenerateResume() {
+    if (!jdDraft.trim()) {
+      setTailorError("Job description is empty.");
+      return;
+    }
+    if (!selectedProfile) {
+      setTailorError("Select a profile before generating a resume.");
+      return;
+    }
+    setTailorError("");
+    setTailorPdfError("");
+    setLlmRawOutput("");
+    setLlmMeta(null);
+    setTailorLoading(true);
+    try {
+      const baseResume = baseResumeView;
+      const baseResumeText = JSON.stringify(baseResume, null, 2);
+      const payload: Record<string, unknown> = {
+        jobDescriptionText: jdDraft.trim(),
+        baseResume,
+        baseResumeText,
+        provider: aiProvider,
+      };
+      const response = (await api("/llm/tailor-resume", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      })) as TailorResumeResponse;
+      setLlmRawOutput(response.content ?? "");
+      setLlmMeta({ provider: response.provider, model: response.model });
+      const parsed = extractTailorPayload(response);
+      if (!parsed) {
+        throw new Error("LLM did not return JSON output.");
+      }
+      const patchCandidate = selectResumePatch(parsed);
+      const nextResume = isBulletAugmentation(patchCandidate)
+        ? applyBulletAugmentation(baseResume, patchCandidate)
+        : isCompanyBulletMap(patchCandidate)
+        ? applyCompanyBulletMap(baseResume, patchCandidate)
+        : mergeResumeData(baseResume, normalizeResumePatch(patchCandidate));
+      const normalized = normalizeBaseResume(nextResume);
+      setTailoredResume(normalized);
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : "Resume generation failed.";
+      setTailorError(message);
+    } finally {
+      setTailorLoading(false);
+    }
+  }
+
+  async function handleDownloadTailoredPdf() {
+    if (!resumePreviewHtml.trim()) {
+      setTailorPdfError("Select a template to export.");
+      return;
+    }
+    setTailorPdfLoading(true);
+    setTailorPdfError("");
+    try {
+      const base = API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
+      const url = new URL("/resume-templates/render-pdf", base).toString();
+      const fileName = buildResumePdfName(selectedProfile?.displayName, selectedTemplate?.name);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${window.localStorage.getItem("smartwork_token") ?? ""}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ html: resumePreviewHtml, filename: fileName }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Unable to export PDF.");
+      }
+      const blob = await res.blob();
+      const headerName = getPdfFilenameFromHeader(res.headers.get("content-disposition"));
+      const downloadName = headerName || `${fileName}.pdf`;
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : "Unable to export PDF.";
+      setTailorPdfError(message);
+    } finally {
+      setTailorPdfLoading(false);
+    }
+  }
+
   useEffect(() => {
     const fetchForUser = async () => {
       if (!user || user.role === "OBSERVER") return;
@@ -897,6 +1401,9 @@ export default function Page() {
     <>
     <main className="min-h-screen w-full bg-white text-slate-900">
       <TopNav />
+      {jdSelectionMode ? (
+        <div className="fixed inset-0 z-40 bg-slate-900/65 backdrop-blur-[1px]" />
+      ) : null}
       <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 space-y-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
@@ -1012,7 +1519,11 @@ export default function Page() {
               </div>
             </div>
 
-            <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-4">
+            <div
+              className={`relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 ${
+                jdSelectionMode ? "z-50 ring-2 ring-emerald-400 shadow-2xl" : ""
+              }`}
+            >
               <div className="mb-3 flex items-center justify-between">
                 <div>
                   <p className="text-xs uppercase tracking-[0.25em] text-slate-700">
@@ -1026,6 +1537,11 @@ export default function Page() {
                   Status: {session ? session.status : "Idle"}
                 </div>
               </div>
+              {jdSelectionMode ? (
+                <div className="absolute right-4 top-4 z-10 rounded-full bg-emerald-500/90 px-3 py-1 text-[11px] font-semibold text-emerald-950">
+                  Selection mode
+                </div>
+              ) : null}
               <div className="relative min-h-[420px] h-[70vh] max-h-[80vh] overflow-hidden rounded-xl border border-slate-200 bg-slate-950">
                 {streamFrame ? (
                   <div className="h-full w-full overflow-auto bg-slate-950">
@@ -1167,6 +1683,47 @@ export default function Page() {
 
             <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
               <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold">Tailored resume</p>
+                <span className="text-xs text-slate-700">Template preview</span>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                Using server AI key from environment variables.
+              </div>
+              <label className="space-y-1">
+                <span className="text-[10px] uppercase tracking-[0.24em] text-slate-500">
+                  Provider
+                </span>
+                <select
+                  value={aiProvider}
+                  onChange={(event) =>
+                    setAiProvider(event.target.value as "OPENAI" | "HUGGINGFACE" | "GEMINI")
+                  }
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300"
+                >
+                  <option value="HUGGINGFACE">Hugging Face</option>
+                  <option value="OPENAI">OpenAI</option>
+                  <option value="GEMINI">Gemini</option>
+                </select>
+              </label>
+              <button
+                onClick={handleGenerateResume}
+                disabled={!selectedProfileId || tailorLoading || jdCaptureLoading || jdSelectionMode}
+                className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {jdCaptureLoading ? "Reading JD..." : tailorLoading ? "Generating..." : "Generate Resume"}
+              </button>
+              <p className="text-xs text-slate-600">
+                Review the job description before sending to AI.
+              </p>
+              {jdSelectionMode ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  Selection mode active. Highlight the job description in the browser.
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+              <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold">Profile base info</p>
                 <button
                   className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-800 shadow-sm transition hover:bg-slate-100"
@@ -1210,6 +1767,209 @@ export default function Page() {
         )}
 
       </div>
+      {jdPreviewOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6"
+          onClick={() => setJdPreviewOpen(false)}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                  Job description
+                </p>
+                <h2 className="text-2xl font-semibold text-slate-900">Review</h2>
+                <p className="text-xs text-slate-500">
+                  Confirm the JD text before sending to AI.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCancelJd}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <textarea
+                value={jdDraft}
+                onChange={(event) => setJdDraft(event.target.value)}
+                placeholder={jdCaptureLoading ? "Enable selection mode..." : "Selected job description"}
+                className="h-80 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-900 outline-none ring-1 ring-transparent focus:ring-slate-300"
+                disabled={jdCaptureLoading}
+              />
+              {jdCaptureError ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {jdCaptureError}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleConfirmJd}
+                  disabled={jdCaptureLoading || !jdDraft.trim() || tailorLoading}
+                  className="rounded-full bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {tailorLoading ? "Generating..." : "Generate"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReselectJd}
+                  disabled={jdCaptureLoading || tailorLoading}
+                  className="rounded-full border border-slate-200 px-4 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  Reselect
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelJd}
+                  disabled={jdCaptureLoading || tailorLoading}
+                  className="rounded-full border border-slate-200 px-4 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {resumePreviewOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6"
+          onClick={() => setResumePreviewOpen(false)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-6xl overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                  Tailored resume
+                </p>
+                <h2 className="text-2xl font-semibold text-slate-900">Preview</h2>
+                {selectedProfile ? (
+                  <p className="text-xs text-slate-500">
+                    Profile: {selectedProfile.displayName}
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadTailoredPdf}
+                  disabled={tailorPdfLoading || !resumePreviewHtml.trim()}
+                  className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {tailorPdfLoading ? "Saving..." : "Save PDF"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRegenerateResume}
+                  disabled={tailorLoading || !jdDraft.trim()}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {tailorLoading ? "Generating..." : "Regenerate"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateResume}
+                  disabled={tailorLoading}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  Reselect JD
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResumePreviewOpen(false)}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <div className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                Template
+              </div>
+              {resumeTemplatesLoading ? (
+                <div className="text-xs text-slate-500">Loading templates...</div>
+              ) : resumeTemplates.length === 0 ? (
+                <div className="text-xs text-slate-500">No templates yet.</div>
+              ) : (
+                <select
+                  value={resumeTemplateId}
+                  onChange={(event) => setResumeTemplateId(event.target.value)}
+                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
+                >
+                  {resumeTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {tailorError ? (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {tailorError}
+              </div>
+            ) : null}
+            {tailorPdfError ? (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {tailorPdfError}
+              </div>
+            ) : null}
+            {resumeTemplatesError ? (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {resumeTemplatesError}
+              </div>
+            ) : null}
+
+            <div className="mt-5 space-y-3">
+              <div className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                Template preview
+              </div>
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                {tailorLoading ? (
+                  <div className="flex h-[520px] items-center justify-center text-sm text-slate-500">
+                    Generating tailored resume...
+                  </div>
+                ) : (
+                  <iframe
+                    title="Tailored resume preview"
+                    srcDoc={resumePreviewDoc}
+                    className="h-[520px] w-full"
+                    sandbox=""
+                    referrerPolicy="no-referrer"
+                  />
+                )}
+              </div>
+              {llmRawOutput ? (
+                <details className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                  <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+                    LLM output (for testing)
+                  </summary>
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    Provider: {llmMeta?.provider || "unknown"} · Model: {llmMeta?.model || "unknown"}
+                  </div>
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-white p-3 text-xs text-slate-800">
+{llmRawOutput}
+                  </pre>
+                </details>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
     </>
   );
@@ -1267,6 +2027,644 @@ function cleanBaseInfo(base: BaseInfo): BaseInfo {
     preferences: base?.preferences ?? {},
     defaultAnswers: base?.defaultAnswers ?? {},
   };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object") return false;
+  return Object.prototype.toString.call(value) === "[object Object]";
+}
+
+function getEmptyWorkExperience(): WorkExperience {
+  return {
+    companyTitle: "",
+    roleTitle: "",
+    employmentType: "",
+    location: "",
+    startDate: "",
+    endDate: "",
+    bullets: [""],
+  };
+}
+
+function getEmptyEducation(): EducationEntry {
+  return {
+    institution: "",
+    degree: "",
+    field: "",
+    date: "",
+    coursework: [""],
+  };
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [""];
+  const cleaned = value.map((item) => cleanString(item as string | number | null));
+  return cleaned.length ? cleaned : [""];
+}
+
+function normalizeWorkExperience(value: unknown): WorkExperience {
+  const source = isPlainObject(value) ? value : {};
+  return {
+    companyTitle: cleanString(source.companyTitle as string | number | null),
+    roleTitle: cleanString(source.roleTitle as string | number | null),
+    employmentType: cleanString(source.employmentType as string | number | null),
+    location: cleanString(source.location as string | number | null),
+    startDate: cleanString(source.startDate as string | number | null),
+    endDate: cleanString(source.endDate as string | number | null),
+    bullets: normalizeStringList(source.bullets),
+  };
+}
+
+function normalizeEducation(value: unknown): EducationEntry {
+  const source = isPlainObject(value) ? value : {};
+  return {
+    institution: cleanString(source.institution as string | number | null),
+    degree: cleanString(source.degree as string | number | null),
+    field: cleanString(source.field as string | number | null),
+    date: cleanString(source.date as string | number | null),
+    coursework: normalizeStringList(source.coursework),
+  };
+}
+
+function getEmptyBaseResume(): BaseResume {
+  return {
+    Profile: {
+      name: "",
+      headline: "",
+      contact: {
+        location: "",
+        email: "",
+        phone: "",
+        linkedin: "",
+      },
+    },
+    summary: { text: "" },
+    workExperience: [getEmptyWorkExperience()],
+    education: [getEmptyEducation()],
+    skills: { raw: [""] },
+  };
+}
+
+function normalizeBaseResume(value?: BaseResume): BaseResume {
+  if (!isPlainObject(value)) return getEmptyBaseResume();
+  const profileAlias = isPlainObject((value as Record<string, unknown>).profile)
+    ? ((value as Record<string, unknown>).profile as Record<string, unknown>)
+    : {};
+  const profileInput = isPlainObject(value.Profile) ? value.Profile : profileAlias;
+  const contactInput = isPlainObject(profileInput.contact) ? profileInput.contact : {};
+  const summaryInput = isPlainObject(value.summary) ? value.summary : {};
+  const summaryText =
+    typeof value.summary === "string"
+      ? value.summary
+      : cleanString(summaryInput.text as string | number | null);
+  const workExperience =
+    Array.isArray(value.workExperience) && value.workExperience.length
+      ? value.workExperience.map(normalizeWorkExperience)
+      : [getEmptyWorkExperience()];
+  const education =
+    Array.isArray(value.education) && value.education.length
+      ? value.education.map(normalizeEducation)
+      : [getEmptyEducation()];
+  const skillsInput = isPlainObject(value.skills) ? value.skills : {};
+  const rawSkills = Array.isArray(value.skills) ? value.skills : skillsInput.raw;
+
+  return {
+    Profile: {
+      name: cleanString(profileInput.name as string | number | null),
+      headline: cleanString(profileInput.headline as string | number | null),
+      contact: {
+        location: cleanString(contactInput.location as string | number | null),
+        email: cleanString(contactInput.email as string | number | null),
+        phone: cleanString(contactInput.phone as string | number | null),
+        linkedin: cleanString(contactInput.linkedin as string | number | null),
+      },
+    },
+    summary: { text: cleanString(summaryText) },
+    workExperience,
+    education,
+    skills: { raw: normalizeStringList(rawSkills) },
+  };
+}
+
+function parseJsonSafe(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonPayload(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const direct = parseJsonSafe(trimmed);
+  if (direct) return direct;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    const parsed = parseJsonSafe(fenced[1].trim());
+    if (parsed) return parsed;
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const parsed = parseJsonSafe(trimmed.slice(start, end + 1));
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function extractTailorPayload(response: TailorResumeResponse) {
+  const parsed = response.parsed ?? extractJsonPayload(response.content ?? "");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+function selectResumePatch(payload: Record<string, unknown>) {
+  const candidates = [
+    payload.tailored_resume,
+    payload.tailoredResume,
+    payload.resume,
+    payload.updated_resume,
+    payload.updates,
+    payload.patch,
+    payload.result,
+    payload.output,
+    payload.data,
+  ];
+  for (const candidate of candidates) {
+    if (isPlainObject(candidate)) return candidate as Record<string, unknown>;
+  }
+  return payload;
+}
+
+function normalizeResumePatch(patch: Record<string, unknown>) {
+  const next: Record<string, unknown> = { ...patch };
+  if (!next.Profile && isPlainObject(next.profile)) {
+    next.Profile = next.profile as Record<string, unknown>;
+  }
+  if (!next.workExperience && Array.isArray(next.work_experience)) {
+    next.workExperience = next.work_experience;
+  }
+  if (!next.workExperience && Array.isArray(next.experience)) {
+    next.workExperience = next.experience;
+  }
+  if (typeof next.summary === "string") {
+    next.summary = { text: next.summary };
+  }
+  if (Array.isArray(next.skills)) {
+    next.skills = { raw: next.skills };
+  }
+  if (typeof next.skills === "string") {
+    next.skills = { raw: [next.skills] };
+  }
+  return next;
+}
+
+function isBulletAugmentation(value: Record<string, unknown>): value is BulletAugmentation {
+  return (
+    "first_company" in value ||
+    "second_company" in value ||
+    "other_companies" in value
+  );
+}
+
+function isCompanyBulletMap(value: Record<string, unknown>): value is CompanyBulletMap {
+  if (isBulletAugmentation(value)) return false;
+  const entries = Object.entries(value);
+  if (!entries.length) return false;
+  const hasArray = entries.some(([, v]) => Array.isArray(v));
+  if (!hasArray) return false;
+  return entries.every(
+    ([, v]) =>
+      Array.isArray(v) && v.every((item) => typeof item === "string")
+  );
+}
+
+function normalizeBulletList(value?: string[]) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => cleanString(item)).filter(Boolean);
+}
+
+function applyBulletAugmentation(base: BaseResume, augmentation: BulletAugmentation): BaseResume {
+  const normalized = normalizeBaseResume(base);
+  const workExperience = (normalized.workExperience ?? []).map((item) => ({
+    ...item,
+    bullets: Array.isArray(item.bullets) ? [...item.bullets] : [],
+  }));
+
+  const appendAt = (index: number, bullets?: string[]) => {
+    if (index < 0 || index >= workExperience.length) return;
+    const existing = normalizeBulletList(workExperience[index].bullets);
+    const extras = normalizeBulletList(bullets);
+    if (!extras.length) return;
+    workExperience[index] = {
+      ...workExperience[index],
+      bullets: [...extras, ...existing],
+    };
+  };
+
+  appendAt(0, augmentation.first_company);
+  appendAt(1, augmentation.second_company);
+
+  if (Array.isArray(augmentation.other_companies)) {
+    augmentation.other_companies.forEach((entry) => {
+      const rawIndex = entry?.experience_index;
+      const index = typeof rawIndex === "number" ? rawIndex : Number(rawIndex);
+      if (!Number.isFinite(index)) return;
+      appendAt(index, entry?.bullets);
+    });
+  }
+
+  return {
+    ...normalized,
+    workExperience,
+  };
+}
+
+function buildExperienceKey(item: WorkExperience) {
+  const title = cleanString(item.roleTitle);
+  const company = cleanString(item.companyTitle);
+  if (title && company) return `${title} - ${company}`;
+  return title || company || "";
+}
+
+function normalizeCompanyKey(value: string) {
+  return cleanString(value)
+    .replace(/[–—−]/g, "-")
+    .replace(/\s*-\s*/g, " - ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function buildExperienceKeyAliases(item: WorkExperience) {
+  const aliases = new Set<string>();
+  const key = buildExperienceKey(item);
+  if (key) aliases.add(key);
+  const title = cleanString(item.roleTitle);
+  const company = cleanString(item.companyTitle);
+  if (title) aliases.add(title);
+  if (company) aliases.add(company);
+  if (title && company) aliases.add(`${company} - ${title}`);
+  return Array.from(aliases);
+}
+
+function applyCompanyBulletMap(base: BaseResume, map: CompanyBulletMap): BaseResume {
+  const normalized = normalizeBaseResume(base);
+  const workExperience = (normalized.workExperience ?? []).map((item) => ({
+    ...item,
+    bullets: Array.isArray(item.bullets) ? [...item.bullets] : [],
+  }));
+  const keyToIndex = new Map<string, number>();
+  workExperience.forEach((item, index) => {
+    buildExperienceKeyAliases(item).forEach((key) => {
+      if (key && !keyToIndex.has(key)) {
+        keyToIndex.set(key, index);
+      }
+      const normalizedKey = normalizeCompanyKey(key);
+      if (normalizedKey && !keyToIndex.has(normalizedKey)) {
+        keyToIndex.set(normalizedKey, index);
+      }
+    });
+  });
+  Object.entries(map).forEach(([key, bullets]) => {
+    const cleanKey = cleanString(key);
+    if (!cleanKey) return;
+    const normalizedKey = normalizeCompanyKey(cleanKey);
+    const index = keyToIndex.get(cleanKey) ?? keyToIndex.get(normalizedKey);
+    if (index === undefined) return;
+    const existing = normalizeBulletList(workExperience[index].bullets);
+    const extras = normalizeBulletList(bullets);
+    if (!extras.length) return;
+    workExperience[index] = {
+      ...workExperience[index],
+      bullets: [...extras, ...existing],
+    };
+  });
+  return { ...normalized, workExperience };
+}
+
+function mergeResumeData(base: BaseResume, patch: Record<string, unknown>) {
+  if (!isPlainObject(patch)) return base;
+  const target = isPlainObject(base) ? base : {};
+  return deepMerge(target, patch) as BaseResume;
+}
+
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>) {
+  const result: Record<string, unknown> = { ...target };
+  Object.entries(source).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      result[key] = value;
+      return;
+    }
+    if (isPlainObject(value) && isPlainObject(result[key])) {
+      result[key] = deepMerge(result[key] as Record<string, unknown>, value);
+      return;
+    }
+    result[key] = value;
+  });
+  return result;
+}
+
+function renderResumeTemplate(templateHtml: string, resume: BaseResume) {
+  if (!templateHtml.trim()) return "";
+  const data = buildTemplateData(resume);
+  return renderMustacheTemplate(templateHtml, data);
+}
+
+type SafeHtml = { __html: string };
+
+function safeHtml(value: string): SafeHtml {
+  return { __html: value };
+}
+
+function isSafeHtml(value: unknown): value is SafeHtml {
+  return Boolean(value && typeof value === "object" && "__html" in (value as SafeHtml));
+}
+
+function buildTemplateData(resume: BaseResume) {
+  const profile = resume.Profile ?? {};
+  const summary = resume.summary ?? {};
+  const skills = resume.skills ?? {};
+  return {
+    ...resume,
+    Profile: profile,
+    profile,
+    summary,
+    skills,
+    work_experience: safeHtml(buildWorkExperienceHtml(resume.workExperience)),
+  };
+}
+
+function buildWorkExperienceHtml(items?: WorkExperience[]) {
+  const list = (items ?? []).filter(hasWorkExperience);
+  if (!list.length) return "";
+  return list
+    .map((item, index) => {
+      const title = [item.roleTitle, item.companyTitle]
+        .map(cleanString)
+        .filter(Boolean)
+        .join(" - ");
+      const dates = [item.startDate, item.endDate]
+        .map(cleanString)
+        .filter(Boolean)
+        .join(" - ");
+      const meta = [item.location, item.employmentType]
+        .map(cleanString)
+        .filter(Boolean)
+        .join(" | ");
+      const bullets = (item.bullets ?? []).map(cleanString).filter(Boolean);
+      const bulletHtml = bullets.length
+        ? `<ul>${bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>`
+        : "";
+      const header = escapeHtml(title || `Role ${index + 1}`);
+      const datesHtml = dates ? `<div class="resume-meta">${escapeHtml(dates)}</div>` : "";
+      const metaHtml = meta ? `<div class="resume-meta">${escapeHtml(meta)}</div>` : "";
+      return `<div class="resume-item"><div><strong>${header}</strong></div>${datesHtml}${metaHtml}${bulletHtml}</div>`;
+    })
+    .join("");
+}
+
+function buildEducationHtml(items?: EducationEntry[]) {
+  const list = (items ?? []).filter(hasEducationEntry);
+  if (!list.length) return "";
+  return list
+    .map((item, index) => {
+      const title = [item.degree, item.field].map(cleanString).filter(Boolean).join(" - ");
+      const header = [item.institution, title].map(cleanString).filter(Boolean).join(" | ");
+      const date = cleanString(item.date);
+      const coursework = (item.coursework ?? []).map(cleanString).filter(Boolean);
+      const courseworkText = coursework.length ? `Coursework: ${coursework.join(", ")}` : "";
+      const dateHtml = date ? `<div class="resume-meta">${escapeHtml(date)}</div>` : "";
+      const courseworkHtml = courseworkText
+        ? `<div class="resume-meta">${escapeHtml(courseworkText)}</div>`
+        : "";
+      const label = escapeHtml(header || `Education ${index + 1}`);
+      return `<div class="resume-item"><div><strong>${label}</strong></div>${dateHtml}${courseworkHtml}</div>`;
+    })
+    .join("");
+}
+
+function renderMustacheTemplate(template: string, data: Record<string, unknown>) {
+  return renderTemplateWithContext(template, [data]);
+}
+
+function renderTemplateWithContext(template: string, stack: unknown[]): string {
+  let output = "";
+  let index = 0;
+
+  while (index < template.length) {
+    const openIndex = template.indexOf("{{", index);
+    if (openIndex === -1) {
+      output += template.slice(index);
+      break;
+    }
+    output += template.slice(index, openIndex);
+    const closeIndex = template.indexOf("}}", openIndex + 2);
+    if (closeIndex === -1) {
+      output += template.slice(openIndex);
+      break;
+    }
+    const tag = template.slice(openIndex + 2, closeIndex).trim();
+    index = closeIndex + 2;
+    if (!tag) continue;
+
+    const type = tag[0];
+    if (type === "#" || type === "^") {
+      const name = tag.slice(1).trim();
+      if (!name) continue;
+      const section = findSectionEnd(template, index, name);
+      if (!section) continue;
+      const inner = template.slice(index, section.start);
+      index = section.end;
+      const value = resolvePath(name, stack);
+      const truthy = isSectionTruthy(value);
+
+      if (type === "#") {
+        if (Array.isArray(value)) {
+          if (value.length) {
+            value.forEach((item) => {
+              output += renderTemplateWithContext(inner, pushContext(stack, item));
+            });
+          }
+        } else if (truthy) {
+          output += renderTemplateWithContext(inner, pushContext(stack, value));
+        }
+      } else if (!truthy) {
+        output += renderTemplateWithContext(inner, stack);
+      }
+      continue;
+    }
+
+    if (type === "/") {
+      continue;
+    }
+
+    const value = resolvePath(tag, stack);
+    output += renderValue(value, tag);
+  }
+
+  return output;
+}
+
+function findSectionEnd(template: string, fromIndex: number, name: string) {
+  let index = fromIndex;
+  let depth = 1;
+  while (index < template.length) {
+    const openIndex = template.indexOf("{{", index);
+    if (openIndex === -1) return null;
+    const closeIndex = template.indexOf("}}", openIndex + 2);
+    if (closeIndex === -1) return null;
+    const tag = template.slice(openIndex + 2, closeIndex).trim();
+    index = closeIndex + 2;
+    if (!tag) continue;
+    const type = tag[0];
+    const tagName =
+      type === "#" || type === "^" || type === "/" ? tag.slice(1).trim() : "";
+    if (!tagName) continue;
+    if ((type === "#" || type === "^") && tagName === name) {
+      depth += 1;
+    }
+    if (type === "/" && tagName === name) {
+      depth -= 1;
+      if (depth === 0) {
+        return { start: openIndex, end: closeIndex + 2 };
+      }
+    }
+  }
+  return null;
+}
+
+function resolvePath(path: string, stack: unknown[]) {
+  if (path === ".") return resolveDot(stack);
+  const parts = path.split(".");
+  for (let i = 0; i < stack.length; i += 1) {
+    const value = getPathValue(stack[i], parts);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function resolveDot(stack: unknown[]) {
+  for (let i = 0; i < stack.length; i += 1) {
+    const ctx = stack[i];
+    if (ctx && typeof ctx === "object" && "." in (ctx as Record<string, unknown>)) {
+      return (ctx as Record<string, unknown>)["."];
+    }
+    if (typeof ctx === "string" || typeof ctx === "number" || typeof ctx === "boolean") {
+      return ctx;
+    }
+  }
+  return undefined;
+}
+
+function getPathValue(context: unknown, parts: string[]) {
+  if (!context || typeof context !== "object") return undefined;
+  let current: any = context;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || !(part in current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function pushContext(stack: unknown[], value: unknown) {
+  if (value === null || value === undefined) return stack;
+  if (value && typeof value === "object") {
+    return [value, ...stack];
+  }
+  return [{ ".": value }, ...stack];
+}
+
+function isSectionTruthy(value: unknown) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (isSafeHtml(value)) return Boolean(value.__html);
+  if (value === null || value === undefined) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "object") return true;
+  return Boolean(value);
+}
+
+function renderValue(value: unknown, path: string) {
+  if (isSafeHtml(value)) return value.__html;
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    if (path === "workExperience" || path === "work_experience") {
+      return buildWorkExperienceHtml(value as WorkExperience[]);
+    }
+    if (path === "education") {
+      return buildEducationHtml(value as EducationEntry[]);
+    }
+    if (path === "skills.raw") {
+      const joined = value.map((item) => cleanString(item as string)).filter(Boolean).join(", ");
+      return escapeHtml(joined);
+    }
+    const joined = value.map((item) => cleanString(item as string)).filter(Boolean).join(", ");
+    return escapeHtml(joined);
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === "string") return escapeHtml(record.text);
+    if (Array.isArray(record.raw)) {
+      const joined = record.raw.map((item) => cleanString(item as string)).filter(Boolean).join(", ");
+      return escapeHtml(joined);
+    }
+    return "";
+  }
+  if (typeof value === "boolean") return value ? "true" : "";
+  return escapeHtml(String(value));
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function hasWorkExperience(item: WorkExperience) {
+  if (!item) return false;
+  const fields = [
+    cleanString(item.companyTitle),
+    cleanString(item.roleTitle),
+    cleanString(item.employmentType),
+    cleanString(item.location),
+    cleanString(item.startDate),
+    cleanString(item.endDate),
+  ];
+  if (fields.some(Boolean)) return true;
+  return (item.bullets ?? []).some((bullet) => cleanString(bullet));
+}
+
+function hasEducationEntry(item: EducationEntry) {
+  if (!item) return false;
+  const fields = [
+    cleanString(item.institution),
+    cleanString(item.degree),
+    cleanString(item.field),
+    cleanString(item.date),
+  ];
+  if (fields.some(Boolean)) return true;
+  return (item.coursework ?? []).some((course) => cleanString(course));
+}
+
+function buildResumePdfName(profileName?: string, templateName?: string) {
+  const base = [profileName, templateName, "resume"].filter(Boolean).join("-");
+  const cleaned = base
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return cleaned || "resume";
+}
+
+function getPdfFilenameFromHeader(header: string | null) {
+  if (!header) return "";
+  const match = header.match(/filename=\"?([^\";]+)\"?/i);
+  return match ? match[1] : "";
 }
 
 function StatTile({

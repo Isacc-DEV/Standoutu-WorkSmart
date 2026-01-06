@@ -16,6 +16,7 @@ import {
   ProfileAccount,
   ProfileAccountWithProfile,
   ReactionSummary,
+  ResumeTemplate,
   UnreadInfo,
   User,
   UserPresence,
@@ -186,6 +187,16 @@ export async function initDb() {
         assigned_bidder_id UUID REFERENCES users(id),
         assigned_by UUID REFERENCES users(id),
         assigned_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS resume_templates (
+        id UUID PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        html TEXT NOT NULL,
+        created_by UUID REFERENCES users(id),
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
@@ -387,6 +398,8 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_profile_accounts_profile ON profile_accounts(profile_id);
       CREATE INDEX IF NOT EXISTS idx_applications_bidder ON applications(bidder_user_id);
       CREATE INDEX IF NOT EXISTS idx_applications_profile ON applications(profile_id);
+      CREATE INDEX IF NOT EXISTS idx_resume_templates_updated ON resume_templates(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_resume_templates_name ON resume_templates(name);
       CREATE INDEX IF NOT EXISTS idx_community_members_thread ON community_thread_members(thread_id);
       CREATE INDEX IF NOT EXISTS idx_community_members_user ON community_thread_members(user_id);
       CREATE INDEX IF NOT EXISTS idx_community_messages_thread ON community_messages(thread_id);
@@ -956,6 +969,117 @@ export async function updateProfileRecord(profile: {
       JSON.stringify(profile.baseResume ?? {}),
     ],
   );
+}
+
+export async function listResumeTemplates(): Promise<ResumeTemplate[]> {
+  const { rows } = await pool.query<ResumeTemplate>(
+    `
+      SELECT
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM resume_templates
+      ORDER BY updated_at DESC, created_at DESC
+    `,
+  );
+  return rows;
+}
+
+export async function findResumeTemplateById(id: string): Promise<ResumeTemplate | undefined> {
+  const { rows } = await pool.query<ResumeTemplate>(
+    `
+      SELECT
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM resume_templates
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [id],
+  );
+  return rows[0];
+}
+
+export async function insertResumeTemplate(template: ResumeTemplate): Promise<ResumeTemplate> {
+  const createdAt = template.createdAt ?? new Date().toISOString();
+  const updatedAt = template.updatedAt ?? createdAt;
+  const { rows } = await pool.query<ResumeTemplate>(
+    `
+      INSERT INTO resume_templates (
+        id,
+        name,
+        description,
+        html,
+        created_by,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+    `,
+    [
+      template.id,
+      template.name,
+      template.description ?? null,
+      template.html,
+      template.createdBy ?? null,
+      createdAt,
+      updatedAt,
+    ],
+  );
+  return rows[0];
+}
+
+export async function updateResumeTemplate(template: {
+  id: string;
+  name: string;
+  description?: string | null;
+  html: string;
+}): Promise<ResumeTemplate | undefined> {
+  const { rows } = await pool.query<ResumeTemplate>(
+    `
+      UPDATE resume_templates
+      SET name = $2,
+          description = $3,
+          html = $4,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+    `,
+    [template.id, template.name, template.description ?? null, template.html],
+  );
+  return rows[0];
+}
+
+export async function deleteResumeTemplate(id: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    'DELETE FROM resume_templates WHERE id = $1',
+    [id],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 

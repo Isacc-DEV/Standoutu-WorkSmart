@@ -9,7 +9,7 @@ import {
   type MouseEventHandler,
 } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "../../../lib/api";
+import { API_BASE, api } from "../../../lib/api";
 import { useAuth } from "../../../lib/useAuth";
 import ManagerShell from "../../../components/ManagerShell";
 
@@ -88,6 +88,15 @@ type User = {
   isActive?: boolean;
 };
 
+type ResumeTemplate = {
+  id: string;
+  name: string;
+  description?: string | null;
+  html: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type SectionKey = "contact" | "location" | "career" | "education" | "workAuth";
 
 const DEFAULT_SECTION_STATE = {
@@ -105,6 +114,13 @@ const DEFAULT_BASE_RESUME_SECTIONS = {
   education: true,
   skills: true,
 };
+
+const EMPTY_RESUME_PREVIEW = `<!doctype html>
+<html>
+<body style="font-family: Arial, sans-serif; padding: 24px; color: #475569;">
+  <p>No template selected.</p>
+</body>
+</html>`;
 
 const srOnly = "absolute -m-px h-px w-px overflow-hidden whitespace-nowrap border-0 p-0";
 
@@ -124,6 +140,13 @@ export default function ManagerProfilesPage() {
   const [baseResumeEducationOpen, setBaseResumeEducationOpen] = useState<boolean[]>([]);
   const [savingBaseResume, setSavingBaseResume] = useState(false);
   const baseResumeInputRef = useRef<HTMLInputElement | null>(null);
+  const [resumeTemplates, setResumeTemplates] = useState<ResumeTemplate[]>([]);
+  const [resumeTemplatesLoading, setResumeTemplatesLoading] = useState(false);
+  const [resumeTemplatesError, setResumeTemplatesError] = useState("");
+  const [resumePreviewOpen, setResumePreviewOpen] = useState(false);
+  const [resumeTemplateId, setResumeTemplateId] = useState<string>("");
+  const [resumePdfLoading, setResumePdfLoading] = useState(false);
+  const [resumeExportError, setResumeExportError] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -238,6 +261,20 @@ export default function ManagerProfilesPage() {
     }
   }, []);
 
+  const loadResumeTemplates = useCallback(async (authToken: string) => {
+    setResumeTemplatesLoading(true);
+    setResumeTemplatesError("");
+    try {
+      const list = await api<ResumeTemplate[]>("/resume-templates", undefined, authToken);
+      setResumeTemplates(list);
+    } catch (err) {
+      console.error(err);
+      setResumeTemplatesError("Failed to load resume templates.");
+    } finally {
+      setResumeTemplatesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (loading) return;
     if (!user || !token) {
@@ -251,7 +288,17 @@ export default function ManagerProfilesPage() {
     void loadProfiles(token);
     void loadBidders(token);
     void loadAssignments(token);
-  }, [loading, user, token, router, loadProfiles, loadBidders, loadAssignments]);
+    void loadResumeTemplates(token);
+  }, [
+    loading,
+    user,
+    token,
+    router,
+    loadProfiles,
+    loadBidders,
+    loadAssignments,
+    loadResumeTemplates,
+  ]);
 
   useEffect(() => {
     if (!selectedProfile || !token) {
@@ -261,6 +308,8 @@ export default function ManagerProfilesPage() {
       setBaseResumeSections(DEFAULT_BASE_RESUME_SECTIONS);
       setBaseResumeWorkOpen([]);
       setBaseResumeEducationOpen([]);
+      setResumePreviewOpen(false);
+      setResumeExportError("");
       return;
     }
     const normalizedBaseResume = normalizeBaseResume(selectedProfile.baseResume);
@@ -278,6 +327,16 @@ export default function ManagerProfilesPage() {
       setAssignBidderId(bidders[0].id);
     }
   }, [activeAssignment, bidders, selectedProfile, token]);
+
+  useEffect(() => {
+    if (!resumeTemplates.length) {
+      setResumeTemplateId("");
+      return;
+    }
+    if (!resumeTemplateId || !resumeTemplates.some((t) => t.id === resumeTemplateId)) {
+      setResumeTemplateId(resumeTemplates[0].id);
+    }
+  }, [resumeTemplates, resumeTemplateId]);
 
   async function handleSaveProfile(sectionKey?: SectionKey) {
     if (!selectedProfile || !token) return;
@@ -369,6 +428,58 @@ export default function ManagerProfilesPage() {
     setBaseResumeDraft(normalizeBaseResume(selectedProfile?.baseResume));
     setBaseResumeError("");
     setBaseResumeEdit(false);
+  }
+
+  function handleOpenResumePreview() {
+    setResumePreviewOpen(true);
+    setResumeExportError("");
+    if (!resumeTemplates.length && token) {
+      void loadResumeTemplates(token);
+    }
+  }
+
+  async function handleDownloadResumePdf() {
+    if (!token) return;
+    if (!resumePreviewHtml.trim()) {
+      setResumeExportError("Select a template to export.");
+      return;
+    }
+    setResumePdfLoading(true);
+    setResumeExportError("");
+    try {
+      const base = API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
+      const url = new URL("/resume-templates/render-pdf", base).toString();
+      const fileName = buildResumePdfName(selectedProfile?.displayName, selectedTemplate?.name);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ html: resumePreviewHtml, filename: fileName }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Unable to export PDF.");
+      }
+      const blob = await res.blob();
+      const headerName = getPdfFilenameFromHeader(res.headers.get("content-disposition"));
+      const downloadName = headerName || `${fileName}.pdf`;
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : "Unable to export PDF.";
+      setResumeExportError(message);
+    } finally {
+      setResumePdfLoading(false);
+    }
   }
 
   function toggleBaseResumeSection(key: keyof typeof DEFAULT_BASE_RESUME_SECTIONS) {
@@ -616,6 +727,15 @@ export default function ManagerProfilesPage() {
 
   const draft = cleanBaseInfo(draftBase);
   const baseResumeView = normalizeBaseResume(baseResumeDraft);
+  const selectedTemplate = useMemo(
+    () => resumeTemplates.find((template) => template.id === resumeTemplateId) ?? null,
+    [resumeTemplates, resumeTemplateId],
+  );
+  const resumePreviewHtml = useMemo(() => {
+    if (!selectedTemplate?.html) return "";
+    return renderResumeTemplate(selectedTemplate.html, baseResumeView);
+  }, [selectedTemplate, baseResumeView]);
+  const resumePreviewDoc = resumePreviewHtml.trim() ? resumePreviewHtml : EMPTY_RESUME_PREVIEW;
   const baseResumeDirty = useMemo(
     () => serializeBaseResume(baseResumeDraft) !== serializeBaseResume(selectedProfile?.baseResume),
     [baseResumeDraft, selectedProfile],
@@ -931,6 +1051,12 @@ export default function ManagerProfilesPage() {
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={handleOpenResumePreview}
+                        className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100"
+                      >
+                        Preview
+                      </button>
                       <input
                         ref={baseResumeInputRef}
                         type="file"
@@ -1598,6 +1724,111 @@ export default function ManagerProfilesPage() {
             </div>
           )}
 
+          {resumePreviewOpen && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6"
+              onClick={() => setResumePreviewOpen(false)}
+            >
+              <div
+                className="max-h-[90vh] w-full max-w-6xl overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                      Base resume
+                    </p>
+                    <h2 className="text-2xl font-semibold text-slate-900">Preview</h2>
+                    {selectedProfile ? (
+                      <p className="text-xs text-slate-500">
+                        Profile: {selectedProfile.displayName}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDownloadResumePdf}
+                      disabled={resumePdfLoading || !resumePreviewHtml.trim()}
+                      className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                    >
+                      {resumePdfLoading ? "Saving..." : "Save PDF"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => router.push("/manager/resume-templates")}
+                      className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                    >
+                      Manage templates
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setResumePreviewOpen(false)}
+                      className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                    Template
+                  </div>
+                  {resumeTemplatesLoading ? (
+                    <div className="text-xs text-slate-500">Loading templates...</div>
+                  ) : resumeTemplates.length === 0 ? (
+                    <div className="text-xs text-slate-500">No templates yet.</div>
+                  ) : (
+                    <select
+                      value={resumeTemplateId}
+                      onChange={(event) => setResumeTemplateId(event.target.value)}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
+                    >
+                      {resumeTemplates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                {resumeExportError ? (
+                  <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                    {resumeExportError}
+                  </div>
+                ) : null}
+                {resumeTemplatesError ? (
+                  <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                    {resumeTemplatesError}
+                  </div>
+                ) : null}
+
+                <div className="mt-5 space-y-3">
+                  <div className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                    Template preview
+                  </div>
+                  <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                    <iframe
+                      title="Resume template preview"
+                      srcDoc={resumePreviewDoc}
+                      className="h-[520px] w-full"
+                      sandbox=""
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    Template bindings: {"{{Profile.name}}"}, {"{{Profile.headline}}"},
+                    {"{{Profile.contact.email}}"}, {"{{Profile.contact.phone}}"},
+                    {"{{Profile.contact.location}}"}, {"{{Profile.contact.linkedin}}"},
+                    {"{{summary.text}}"}, {"{{#workExperience}}...{{/workExperience}}"},
+                    {"{{#education}}...{{/education}}"}, {"{{#skills.raw}}...{{/skills.raw}}"}.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {detailOpen && (
             <div
               className="fixed inset-0 z-30 bg-black/30"
@@ -2183,6 +2414,307 @@ function ReadRow({ label, value }: { label: string; value: string }) {
       <div className="mt-1 text-slate-900">{value || "-"}</div>
     </div>
   );
+}
+
+function hasWorkExperience(item: WorkExperience) {
+  if (!item) return false;
+  const fields = [
+    cleanString(item.companyTitle),
+    cleanString(item.roleTitle),
+    cleanString(item.employmentType),
+    cleanString(item.location),
+    cleanString(item.startDate),
+    cleanString(item.endDate),
+  ];
+  if (fields.some(Boolean)) return true;
+  return (item.bullets ?? []).some((bullet) => cleanString(bullet));
+}
+
+function hasEducationEntry(item: EducationEntry) {
+  if (!item) return false;
+  const fields = [
+    cleanString(item.institution),
+    cleanString(item.degree),
+    cleanString(item.field),
+    cleanString(item.date),
+  ];
+  if (fields.some(Boolean)) return true;
+  return (item.coursework ?? []).some((course) => cleanString(course));
+}
+
+function renderResumeTemplate(templateHtml: string, resume: BaseResume) {
+  if (!templateHtml.trim()) return "";
+  const data = buildTemplateData(resume);
+  return renderMustacheTemplate(templateHtml, data);
+}
+
+type SafeHtml = { __html: string };
+
+function safeHtml(value: string): SafeHtml {
+  return { __html: value };
+}
+
+function isSafeHtml(value: unknown): value is SafeHtml {
+  return Boolean(value && typeof value === "object" && "__html" in (value as SafeHtml));
+}
+
+function buildTemplateData(resume: BaseResume) {
+  const profile = resume.Profile ?? {};
+  const summary = resume.summary ?? {};
+  const skills = resume.skills ?? {};
+  return {
+    ...resume,
+    Profile: profile,
+    profile,
+    summary,
+    skills,
+    work_experience: safeHtml(buildWorkExperienceHtml(resume.workExperience)),
+  };
+}
+
+function buildWorkExperienceHtml(items?: WorkExperience[]) {
+  const list = (items ?? []).filter(hasWorkExperience);
+  if (!list.length) return "";
+  return list
+    .map((item, index) => {
+      const title = [item.roleTitle, item.companyTitle]
+        .map(cleanString)
+        .filter(Boolean)
+        .join(" - ");
+      const dates = [item.startDate, item.endDate]
+        .map(cleanString)
+        .filter(Boolean)
+        .join(" - ");
+      const meta = [item.location, item.employmentType]
+        .map(cleanString)
+        .filter(Boolean)
+        .join(" | ");
+      const bullets = (item.bullets ?? []).map(cleanString).filter(Boolean);
+      const bulletHtml = bullets.length
+        ? `<ul>${bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>`
+        : "";
+      const header = escapeHtml(title || `Role ${index + 1}`);
+      const datesHtml = dates ? `<div class="resume-meta">${escapeHtml(dates)}</div>` : "";
+      const metaHtml = meta ? `<div class="resume-meta">${escapeHtml(meta)}</div>` : "";
+      return `<div class="resume-item"><div><strong>${header}</strong></div>${datesHtml}${metaHtml}${bulletHtml}</div>`;
+    })
+    .join("");
+}
+
+function buildEducationHtml(items?: EducationEntry[]) {
+  const list = (items ?? []).filter(hasEducationEntry);
+  if (!list.length) return "";
+  return list
+    .map((item, index) => {
+      const title = [item.degree, item.field].map(cleanString).filter(Boolean).join(" - ");
+      const header = [item.institution, title].map(cleanString).filter(Boolean).join(" | ");
+      const date = cleanString(item.date);
+      const coursework = (item.coursework ?? []).map(cleanString).filter(Boolean);
+      const courseworkText = coursework.length ? `Coursework: ${coursework.join(", ")}` : "";
+      const dateHtml = date ? `<div class="resume-meta">${escapeHtml(date)}</div>` : "";
+      const courseworkHtml = courseworkText
+        ? `<div class="resume-meta">${escapeHtml(courseworkText)}</div>`
+        : "";
+      const label = escapeHtml(header || `Education ${index + 1}`);
+      return `<div class="resume-item"><div><strong>${label}</strong></div>${dateHtml}${courseworkHtml}</div>`;
+    })
+    .join("");
+}
+
+function renderMustacheTemplate(template: string, data: Record<string, unknown>) {
+  return renderTemplateWithContext(template, [data]);
+}
+
+function renderTemplateWithContext(template: string, stack: unknown[]): string {
+  let output = "";
+  let index = 0;
+
+  while (index < template.length) {
+    const openIndex = template.indexOf("{{", index);
+    if (openIndex === -1) {
+      output += template.slice(index);
+      break;
+    }
+    output += template.slice(index, openIndex);
+    const closeIndex = template.indexOf("}}", openIndex + 2);
+    if (closeIndex === -1) {
+      output += template.slice(openIndex);
+      break;
+    }
+    const tag = template.slice(openIndex + 2, closeIndex).trim();
+    index = closeIndex + 2;
+    if (!tag) continue;
+
+    const type = tag[0];
+    if (type === "#" || type === "^") {
+      const name = tag.slice(1).trim();
+      if (!name) continue;
+      const section = findSectionEnd(template, index, name);
+      if (!section) continue;
+      const inner = template.slice(index, section.start);
+      index = section.end;
+      const value = resolvePath(name, stack);
+      const truthy = isSectionTruthy(value);
+
+      if (type === "#") {
+        if (Array.isArray(value)) {
+          if (value.length) {
+            value.forEach((item) => {
+              output += renderTemplateWithContext(inner, pushContext(stack, item));
+            });
+          }
+        } else if (truthy) {
+          output += renderTemplateWithContext(inner, pushContext(stack, value));
+        }
+      } else if (!truthy) {
+        output += renderTemplateWithContext(inner, stack);
+      }
+      continue;
+    }
+
+    if (type === "/") {
+      continue;
+    }
+
+    const value = resolvePath(tag, stack);
+    output += renderValue(value, tag);
+  }
+
+  return output;
+}
+
+function findSectionEnd(template: string, fromIndex: number, name: string) {
+  let index = fromIndex;
+  let depth = 1;
+  while (index < template.length) {
+    const openIndex = template.indexOf("{{", index);
+    if (openIndex === -1) return null;
+    const closeIndex = template.indexOf("}}", openIndex + 2);
+    if (closeIndex === -1) return null;
+    const tag = template.slice(openIndex + 2, closeIndex).trim();
+    index = closeIndex + 2;
+    if (!tag) continue;
+    const type = tag[0];
+    const tagName =
+      type === "#" || type === "^" || type === "/" ? tag.slice(1).trim() : "";
+    if (!tagName) continue;
+    if ((type === "#" || type === "^") && tagName === name) {
+      depth += 1;
+    }
+    if (type === "/" && tagName === name) {
+      depth -= 1;
+      if (depth === 0) {
+        return { start: openIndex, end: closeIndex + 2 };
+      }
+    }
+  }
+  return null;
+}
+
+function resolvePath(path: string, stack: unknown[]) {
+  if (path === ".") return resolveDot(stack);
+  const parts = path.split(".");
+  for (let i = 0; i < stack.length; i += 1) {
+    const value = getPathValue(stack[i], parts);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function resolveDot(stack: unknown[]) {
+  for (let i = 0; i < stack.length; i += 1) {
+    const ctx = stack[i];
+    if (ctx && typeof ctx === "object" && "." in (ctx as Record<string, unknown>)) {
+      return (ctx as Record<string, unknown>)["."];
+    }
+    if (typeof ctx === "string" || typeof ctx === "number" || typeof ctx === "boolean") {
+      return ctx;
+    }
+  }
+  return undefined;
+}
+
+function getPathValue(context: unknown, parts: string[]) {
+  if (!context || typeof context !== "object") return undefined;
+  let current: any = context;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || !(part in current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function pushContext(stack: unknown[], value: unknown) {
+  if (value === null || value === undefined) return stack;
+  if (value && typeof value === "object") {
+    return [value, ...stack];
+  }
+  return [{ ".": value }, ...stack];
+}
+
+function isSectionTruthy(value: unknown) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (isSafeHtml(value)) return Boolean(value.__html);
+  if (value === null || value === undefined) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "object") return true;
+  return Boolean(value);
+}
+
+function renderValue(value: unknown, path: string) {
+  if (isSafeHtml(value)) return value.__html;
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    if (path === "workExperience" || path === "work_experience") {
+      return buildWorkExperienceHtml(value as WorkExperience[]);
+    }
+    if (path === "education") {
+      return buildEducationHtml(value as EducationEntry[]);
+    }
+    if (path === "skills.raw") {
+      const joined = value.map((item) => cleanString(item as string)).filter(Boolean).join(", ");
+      return escapeHtml(joined);
+    }
+    const joined = value.map((item) => cleanString(item as string)).filter(Boolean).join(", ");
+    return escapeHtml(joined);
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === "string") return escapeHtml(record.text);
+    if (Array.isArray(record.raw)) {
+      const joined = record.raw.map((item) => cleanString(item as string)).filter(Boolean).join(", ");
+      return escapeHtml(joined);
+    }
+    return "";
+  }
+  if (typeof value === "boolean") return value ? "true" : "";
+  return escapeHtml(String(value));
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildResumePdfName(profileName?: string, templateName?: string) {
+  const base = [profileName, templateName, "resume"].filter(Boolean).join("-");
+  const cleaned = base
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return cleaned || "resume";
+}
+
+function getPdfFilenameFromHeader(header: string | null) {
+  if (!header) return "";
+  const match = header.match(/filename=\"?([^\";]+)\"?/i);
+  return match ? match[1] : "";
 }
 
 function readFileAsText(file: File): Promise<string> {

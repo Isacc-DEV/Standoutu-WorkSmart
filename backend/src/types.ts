@@ -105,6 +105,16 @@ export interface Assignment {
   unassignedAt?: string | null;
 }
 
+export interface ResumeTemplate {
+  id: string;
+  name: string;
+  description?: string | null;
+  html: string;
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type SessionStatus =
   | 'OPEN'
   | 'ANALYZED'
@@ -161,7 +171,7 @@ export interface ApplicationSummary {
   createdAt: string;
 }
 
-export type LlmProvider = "OPENAI" | "HUGGINGFACE";
+export type LlmProvider = "OPENAI" | "HUGGINGFACE" | "GEMINI";
 
 export interface LlmSettings {
   id: string;
