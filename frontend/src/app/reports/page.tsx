@@ -7,7 +7,6 @@ import { DateClickArg, DatesSetArg, EventClickArg, EventContentArg } from '@full
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import TopNav from '../../components/TopNav';
-import AdminReportsView from './AdminReportsView';
 import { api } from '../../lib/api';
 import { getReportsLastSeen, setReportsLastSeen, triggerNotificationRefresh } from '../../lib/notifications';
 import { useAuth } from '../../lib/useAuth';
@@ -111,7 +110,6 @@ function shiftDate(value: string, days: number) {
 export default function ReportsPage() {
   const router = useRouter();
   const { user, token, loading } = useAuth();
-  const isReviewer = user?.role === 'ADMIN' || user?.role === 'MANAGER';
   const [reports, setReports] = useState<DailyReport[]>([]);
   const [viewRange, setViewRange] = useState<ViewRange | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => toDateKey(new Date()));
@@ -160,7 +158,7 @@ export default function ReportsPage() {
   const canEdit = isEditing && !isLocked && canEditDate;
 
   useEffect(() => {
-    if (!user || isReviewer) return;
+    if (!user) return;
     if (!selectedReport) return;
     if (selectedReport.status !== 'accepted' && selectedReport.status !== 'rejected') return;
     const lastSeen = getReportsLastSeen(user.id, user.role);
@@ -174,7 +172,6 @@ export default function ReportsPage() {
     setReportsLastSeen(user.id, user.role);
   }, [
     user,
-    isReviewer,
     selectedReport?.id,
     selectedReport?.status,
     selectedReport?.reviewedAt,
@@ -182,7 +179,7 @@ export default function ReportsPage() {
   ]);
 
   useEffect(() => {
-    if (!user || isReviewer) return;
+    if (!user) return;
     if (reports.length === 0) return;
     const lastSeen = getReportsLastSeen(user.id, user.role);
     const lastSeenTime = lastSeen ? Date.parse(lastSeen) : null;
@@ -199,7 +196,7 @@ export default function ReportsPage() {
     if (hasFreshReview) {
       setReportsLastSeen(user.id, user.role);
     }
-  }, [user, isReviewer, reports]);
+  }, [user, reports]);
 
   useEffect(() => {
     setDraftContent(selectedReport?.content ?? '');
@@ -277,7 +274,7 @@ export default function ReportsPage() {
   }, [fetchReports, token, viewRange]);
 
   useEffect(() => {
-    if (!viewRange || !token || isReviewer || isEditing) return;
+    if (!viewRange || !token || isEditing) return;
     let active = true;
     const refresh = () => {
       if (!active || isEditing) return;
@@ -305,7 +302,7 @@ export default function ReportsPage() {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [viewRange?.start, viewRange?.end, token, isReviewer, isEditing, fetchReports]);
+  }, [viewRange?.start, viewRange?.end, token, isEditing, fetchReports]);
 
   const handleDatesSet = useCallback((info: DatesSetArg) => {
     const start = normalizeDateKey(info.startStr);
@@ -317,23 +314,23 @@ export default function ReportsPage() {
   const handleDateClick = useCallback((info: DateClickArg) => {
     const nextDate = normalizeDateKey(info.dateStr);
     setSelectedDate(nextDate);
-    if (!user || isReviewer) return;
+    if (!user) return;
     const report = reportMap.get(nextDate);
     if (report?.status === 'accepted' || report?.status === 'rejected') {
       setReportsLastSeen(user.id, user.role);
     }
-  }, [user, isReviewer, reportMap]);
+  }, [user, reportMap]);
 
   const handleEventClick = useCallback((info: EventClickArg) => {
     if (!info.event.start) return;
     const nextDate = toDateKey(info.event.start);
     setSelectedDate(nextDate);
-    if (!user || isReviewer) return;
+    if (!user) return;
     const report = reportMap.get(nextDate);
     if (report?.status === 'accepted' || report?.status === 'rejected') {
       setReportsLastSeen(user.id, user.role);
     }
-  }, [user, isReviewer, reportMap]);
+  }, [user, reportMap]);
 
   const upsertReportInState = useCallback((next: DailyReport) => {
     setReports((prev) => {
@@ -527,20 +524,9 @@ export default function ReportsPage() {
   );
 
   return (
-    <main
-      className={
-        isReviewer
-          ? 'min-h-screen bg-white text-slate-900'
-          : 'min-h-screen bg-gradient-to-b from-[#f4f8ff] via-[#eef2ff] to-white text-slate-900'
-      }
-    >
+    <main className="min-h-screen bg-gradient-to-b from-[#f4f8ff] via-[#eef2ff] to-white text-slate-900">
       <TopNav />
-      {isReviewer ? (
-        <div className="mx-auto w-full max-w-screen-2xl px-4 py-6">
-          <AdminReportsView token={token} />
-        </div>
-      ) : (
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
         <div className="space-y-2">
           <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">Daily reports</p>
           <h1 className="text-3xl font-semibold text-slate-900">Your month at a glance</h1>
@@ -752,7 +738,6 @@ export default function ReportsPage() {
           </aside>
         </div>
       </div>
-    )}
     </main>
   );
 }
