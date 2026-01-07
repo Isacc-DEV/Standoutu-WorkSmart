@@ -183,6 +183,39 @@ export interface LlmSettings {
   embedModel: string;
   updatedAt: string;
 }
+
+export type DailyReportStatus = "draft" | "in_review" | "accepted" | "rejected";
+
+export interface DailyReport {
+  id: string;
+  userId: string;
+  reportDate: string;
+  status: DailyReportStatus;
+  content?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  submittedAt?: string | null;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+}
+
+export interface DailyReportWithUser extends DailyReport {
+  userName: string;
+  userEmail: string;
+  userAvatarUrl?: string | null;
+  userRole?: UserRole;
+}
+
+export interface DailyReportAttachment {
+  id: string;
+  reportId: string;
+  fileUrl: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  createdAt: string;
+}
+
 export type CommunityThreadType = "CHANNEL" | "DM";
 
 export interface CommunityThread {

@@ -4,6 +4,9 @@ import {
   ApplicationRecord,
   ApplicationSummary,
   Assignment,
+  DailyReport,
+  DailyReportAttachment,
+  DailyReportWithUser,
   CommunityMessage,
   CommunityMessageExtended,
   CommunityThread,
@@ -438,6 +441,36 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_mailbox ON calendar_events(owner_user_id, mailbox);
       CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_start ON calendar_events(owner_user_id, start_at);
 
+      CREATE TABLE IF NOT EXISTS daily_reports (
+        id UUID PRIMARY KEY,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        report_date DATE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        content TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        submitted_at TIMESTAMP,
+        reviewed_at TIMESTAMP,
+        reviewed_by UUID REFERENCES users(id),
+        UNIQUE (user_id, report_date)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_daily_reports_user_status ON daily_reports(user_id, status);
+      CREATE INDEX IF NOT EXISTS idx_daily_reports_report_date ON daily_reports(report_date);
+
+      CREATE TABLE IF NOT EXISTS daily_report_attachments (
+        id UUID PRIMARY KEY,
+        report_id UUID REFERENCES daily_reports(id) ON DELETE CASCADE,
+        file_url TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_size BIGINT NOT NULL,
+        mime_type TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (report_id, file_url)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_daily_report_attachments_report ON daily_report_attachments(report_id);
+
       -- Backfill schema changes at startup to avoid missing migration runs.
       DROP TABLE IF EXISTS resumes;
 
@@ -455,6 +488,14 @@ export async function initDb() {
 
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_community_messages_reply ON community_messages(reply_to_message_id);',
+    );
+
+    await client.query(
+      `
+        UPDATE daily_reports SET status = 'in_review' WHERE status = 'sent';
+        UPDATE daily_reports SET status = 'accepted' WHERE status = 'accept';
+        UPDATE daily_reports SET status = 'rejected' WHERE status = 'failed';
+      `,
     );
 
     const seedKey = 'application_phrases_seed';
@@ -945,6 +986,281 @@ export async function replaceCalendarEvents(params: {
   }
 
   return listCalendarEventsForOwner(ownerUserId, mailboxes);
+}
+
+export async function listDailyReportsForUser(
+  userId: string,
+  range: { start?: string | null; end?: string | null } = {},
+): Promise<DailyReport[]> {
+  const params: Array<string | null> = [userId];
+  let query = `
+    SELECT
+      id,
+      user_id AS "userId",
+      report_date::text AS "reportDate",
+      status,
+      content,
+      created_at AS "createdAt",
+      updated_at AS "updatedAt",
+      submitted_at AS "submittedAt",
+      reviewed_at AS "reviewedAt",
+      reviewed_by AS "reviewedBy"
+    FROM daily_reports
+    WHERE user_id = $1
+  `;
+  if (range.start) {
+    params.push(range.start);
+    query += ` AND report_date >= $${params.length}`;
+  }
+  if (range.end) {
+    params.push(range.end);
+    query += ` AND report_date <= $${params.length}`;
+  }
+  query += ' ORDER BY report_date ASC';
+  const { rows } = await pool.query<DailyReport>(query, params);
+  return rows;
+}
+
+export async function listDailyReportsByDate(
+  reportDate: string,
+): Promise<DailyReportWithUser[]> {
+  const { rows } = await pool.query<DailyReportWithUser>(
+    `
+      SELECT
+        r.id,
+        r.user_id AS "userId",
+        r.report_date::text AS "reportDate",
+        r.status,
+        r.content,
+        r.created_at AS "createdAt",
+        r.updated_at AS "updatedAt",
+        r.submitted_at AS "submittedAt",
+        r.reviewed_at AS "reviewedAt",
+        r.reviewed_by AS "reviewedBy",
+        u.name AS "userName",
+        u.email AS "userEmail",
+        u.avatar_url AS "userAvatarUrl",
+        u.role AS "userRole"
+      FROM daily_reports r
+      JOIN users u ON u.id = r.user_id
+      WHERE r.report_date = $1
+      ORDER BY u.name ASC
+    `,
+    [reportDate],
+  );
+  return rows;
+}
+
+export async function listDailyReportAttachments(
+  reportId: string,
+): Promise<DailyReportAttachment[]> {
+  const { rows } = await pool.query<DailyReportAttachment>(
+    `
+      SELECT
+        id,
+        report_id AS "reportId",
+        file_url AS "fileUrl",
+        file_name AS "fileName",
+        file_size AS "fileSize",
+        mime_type AS "mimeType",
+        created_at AS "createdAt"
+      FROM daily_report_attachments
+      WHERE report_id = $1
+      ORDER BY created_at ASC
+    `,
+    [reportId],
+  );
+  return rows;
+}
+
+export async function insertDailyReportAttachments(
+  reportId: string,
+  attachments: Array<{
+    fileUrl: string;
+    fileName: string;
+    fileSize: number;
+    mimeType: string;
+  }>,
+): Promise<DailyReportAttachment[]> {
+  if (!attachments.length) return [];
+  const values: string[] = [];
+  const params: Array<string | number> = [];
+  let idx = 1;
+  attachments.forEach((attachment) => {
+    values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, NOW())`);
+    params.push(
+      randomUUID(),
+      reportId,
+      attachment.fileUrl,
+      attachment.fileName,
+      attachment.fileSize,
+      attachment.mimeType,
+    );
+  });
+  const { rows } = await pool.query<DailyReportAttachment>(
+    `
+      INSERT INTO daily_report_attachments (
+        id,
+        report_id,
+        file_url,
+        file_name,
+        file_size,
+        mime_type,
+        created_at
+      )
+      VALUES ${values.join(', ')}
+      ON CONFLICT (report_id, file_url) DO NOTHING
+      RETURNING
+        id,
+        report_id AS "reportId",
+        file_url AS "fileUrl",
+        file_name AS "fileName",
+        file_size AS "fileSize",
+        mime_type AS "mimeType",
+        created_at AS "createdAt"
+    `,
+    params,
+  );
+  return rows;
+}
+
+export async function findDailyReportByUserAndDate(
+  userId: string,
+  reportDate: string,
+): Promise<DailyReport | undefined> {
+  const { rows } = await pool.query<DailyReport>(
+    `
+      SELECT
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+      FROM daily_reports
+      WHERE user_id = $1 AND report_date = $2
+      LIMIT 1
+    `,
+    [userId, reportDate],
+  );
+  return rows[0];
+}
+
+export async function findDailyReportById(id: string): Promise<DailyReport | undefined> {
+  const { rows } = await pool.query<DailyReport>(
+    `
+      SELECT
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+      FROM daily_reports
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [id],
+  );
+  return rows[0];
+}
+
+export async function upsertDailyReport(report: {
+  id: string;
+  userId: string;
+  reportDate: string;
+  status: DailyReport['status'];
+  content?: string | null;
+  submittedAt?: string | null;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+}): Promise<DailyReport> {
+  const { rows } = await pool.query<DailyReport>(
+    `
+      INSERT INTO daily_reports (
+        id,
+        user_id,
+        report_date,
+        status,
+        content,
+        created_at,
+        updated_at,
+        submitted_at,
+        reviewed_at,
+        reviewed_by
+      )
+      VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6, $7, $8)
+      ON CONFLICT (user_id, report_date)
+      DO UPDATE SET
+        status = EXCLUDED.status,
+        content = EXCLUDED.content,
+        updated_at = NOW(),
+        submitted_at = EXCLUDED.submitted_at,
+        reviewed_at = EXCLUDED.reviewed_at,
+        reviewed_by = EXCLUDED.reviewed_by
+      RETURNING
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+    `,
+    [
+      report.id,
+      report.userId,
+      report.reportDate,
+      report.status,
+      report.content ?? null,
+      report.submittedAt ?? null,
+      report.reviewedAt ?? null,
+      report.reviewedBy ?? null,
+    ],
+  );
+  return rows[0];
+}
+
+export async function updateDailyReportStatus(params: {
+  id: string;
+  status: DailyReport['status'];
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+}): Promise<DailyReport | undefined> {
+  const { rows } = await pool.query<DailyReport>(
+    `
+      UPDATE daily_reports
+      SET status = $2,
+          reviewed_at = $3,
+          reviewed_by = $4,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+    `,
+    [params.id, params.status, params.reviewedAt ?? null, params.reviewedBy ?? null],
+  );
+  return rows[0];
 }
 
 export async function updateProfileRecord(profile: {

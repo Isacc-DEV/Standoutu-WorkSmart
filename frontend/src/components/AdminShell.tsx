@@ -10,6 +10,7 @@ const links = [
   { href: "/admin/channels", label: "Channels" },
   { href: "/admin/label-aliases", label: "Label tags" },
   { href: "/admin/application-phrases", label: "Application phrases" },
+  { href: "/admin/reports", label: "Daily reports" },
 ];
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {

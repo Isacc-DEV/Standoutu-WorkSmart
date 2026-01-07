@@ -29,6 +29,8 @@ import {
   deleteMessage,
   deleteLabelAlias,
   editMessage,
+  findDailyReportById,
+  findDailyReportByUserAndDate,
   findActiveAssignmentByProfile,
   findCommunityChannelByKey,
   findCommunityDmThreadId,
@@ -72,6 +74,9 @@ import {
   listCommunityMessages,
   listCommunityMessagesWithPagination,
   listCommunityThreadMemberIds,
+  listDailyReportsByDate,
+  listDailyReportAttachments,
+  listDailyReportsForUser,
   listLabelAliases,
   listMessageAttachments,
   listMessageReactions,
@@ -85,10 +90,13 @@ import {
   removeMessageReaction,
   unpinMessage,
   updateCommunityChannel,
+  updateDailyReportStatus,
   updateLabelAliasRecord,
   updateProfileRecord,
   updateUserAvatar,
   updateUserPresence,
+  insertDailyReportAttachments,
+  upsertDailyReport,
 } from "./db";
 import {
   CANONICAL_LABEL_KEYS,
@@ -143,6 +151,23 @@ function trimToNull(val?: string | null) {
   if (typeof val !== "string") return null;
   const trimmed = val.trim();
   return trimmed ? trimmed : null;
+}
+
+function isValidDateString(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return false;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
 }
 
 function buildSafePdfFilename(value?: string | null) {
@@ -2127,6 +2152,286 @@ async function bootstrap() {
       source,
       warning,
     };
+  });
+
+  app.get("/daily-reports", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const parsed = z
+      .object({
+        start: z.string().optional(),
+        end: z.string().optional(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    if (parsed.data.start && !isValidDateString(parsed.data.start)) {
+      return reply.status(400).send({ message: "Invalid start date" });
+    }
+    if (parsed.data.end && !isValidDateString(parsed.data.end)) {
+      return reply.status(400).send({ message: "Invalid end date" });
+    }
+    return listDailyReportsForUser(actor.id, {
+      start: parsed.data.start ?? null,
+      end: parsed.data.end ?? null,
+    });
+  });
+
+  app.get("/daily-reports/by-date", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const parsed = z
+      .object({
+        date: z.string(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success || !isValidDateString(parsed.data.date)) {
+      return reply.status(400).send({ message: "Invalid date" });
+    }
+    const report = await findDailyReportByUserAndDate(actor.id, parsed.data.date);
+    return report ?? null;
+  });
+
+  app.put("/daily-reports/by-date", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const schema = z.object({
+      date: z.string(),
+      content: z.string().optional(),
+      attachments: z
+        .array(
+          z.object({
+            fileUrl: z.string().min(1),
+            fileName: z.string().min(1),
+            fileSize: z.number().nonnegative(),
+            mimeType: z.string().min(1),
+          }),
+        )
+        .optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+    if (!isValidDateString(body.date)) {
+      return reply.status(400).send({ message: "Invalid date" });
+    }
+    const existing = await findDailyReportByUserAndDate(actor.id, body.date);
+    if (existing?.status === "accepted") {
+      return reply
+        .status(409)
+        .send({ message: "Accepted reports are read-only" });
+    }
+    const rawContent =
+      body.content !== undefined ? body.content : existing?.content ?? null;
+    const content = typeof rawContent === "string" ? rawContent.trim() : "";
+    const updated = await upsertDailyReport({
+      id: existing?.id ?? randomUUID(),
+      userId: actor.id,
+      reportDate: body.date,
+      status: "draft",
+      content: content ? content : null,
+      submittedAt: null,
+      reviewedAt: null,
+      reviewedBy: null,
+    });
+    if (body.attachments?.length) {
+      await insertDailyReportAttachments(updated.id, body.attachments);
+    }
+    return updated;
+  });
+
+  app.post("/daily-reports/by-date/send", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const schema = z.object({
+      date: z.string(),
+      content: z.string().optional(),
+      attachments: z
+        .array(
+          z.object({
+            fileUrl: z.string().min(1),
+            fileName: z.string().min(1),
+            fileSize: z.number().nonnegative(),
+            mimeType: z.string().min(1),
+          }),
+        )
+        .optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+    if (!isValidDateString(body.date)) {
+      return reply.status(400).send({ message: "Invalid date" });
+    }
+    const existing = await findDailyReportByUserAndDate(actor.id, body.date);
+    if (existing?.status === "accepted") {
+      return reply
+        .status(409)
+        .send({ message: "Accepted reports are read-only" });
+    }
+    const rawContent =
+      body.content !== undefined ? body.content : existing?.content ?? null;
+    const content = typeof rawContent === "string" ? rawContent.trim() : "";
+    const updated = await upsertDailyReport({
+      id: existing?.id ?? randomUUID(),
+      userId: actor.id,
+      reportDate: body.date,
+      status: "in_review",
+      content: content ? content : null,
+      submittedAt: new Date().toISOString(),
+      reviewedAt: null,
+      reviewedBy: null,
+    });
+    if (body.attachments?.length) {
+      await insertDailyReportAttachments(updated.id, body.attachments);
+    }
+    return updated;
+  });
+
+  app.patch("/daily-reports/:id/status", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can review reports" });
+    }
+    const { id } = request.params as { id: string };
+    const schema = z.object({
+      status: z.enum(["accepted", "rejected"]),
+    });
+    const body = schema.parse(request.body ?? {});
+    const report = await findDailyReportById(id);
+    if (!report) {
+      return reply.status(404).send({ message: "Report not found" });
+    }
+    const updated = await updateDailyReportStatus({
+      id,
+      status: body.status,
+      reviewedAt: new Date().toISOString(),
+      reviewedBy: actor.id,
+    });
+    return updated;
+  });
+
+  app.get("/daily-reports/:id/attachments", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const { id } = request.params as { id: string };
+    const report = await findDailyReportById(id);
+    if (!report) {
+      return reply.status(404).send({ message: "Report not found" });
+    }
+    const isReviewer = actor.role === "ADMIN" || actor.role === "MANAGER";
+    if (!isReviewer && report.userId !== actor.id) {
+      return reply.status(403).send({ message: "Not allowed to view attachments" });
+    }
+    return listDailyReportAttachments(id);
+  });
+
+  app.post("/daily-reports/upload", async (request: any, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) return reply.status(401).send({ message: "Unauthorized" });
+
+    const data = await request.file();
+    if (!data) return reply.status(400).send({ message: "No file provided" });
+
+    const buffer = await data.toBuffer();
+    const fileName = data.filename;
+    const mimeType = data.mimetype;
+
+    if (buffer.length > 10 * 1024 * 1024) {
+      return reply.status(400).send({ message: "File too large. Max 10MB." });
+    }
+
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/gif",
+      "image/webp",
+      "application/pdf",
+      "application/zip",
+      "text/plain",
+      "text/csv",
+    ];
+    if (!allowedTypes.includes(mimeType)) {
+      return reply.status(400).send({ message: "File type not supported" });
+    }
+
+    try {
+      const { url } = await uploadToSupabase(buffer, fileName, mimeType);
+      return {
+        fileUrl: url,
+        fileName,
+        fileSize: buffer.length,
+        mimeType,
+      };
+    } catch (err) {
+      request.log.error({ err }, "Report file upload failed");
+      return reply.status(500).send({ message: "Upload failed" });
+    }
+  });
+
+  app.get("/admin/daily-reports/by-date", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can view reports" });
+    }
+    const parsed = z
+      .object({
+        date: z.string(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success || !isValidDateString(parsed.data.date)) {
+      return reply.status(400).send({ message: "Invalid date" });
+    }
+    return listDailyReportsByDate(parsed.data.date);
+  });
+
+  app.get("/admin/daily-reports/by-user", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can view reports" });
+    }
+    const parsed = z
+      .object({
+        userId: z.string().uuid(),
+        start: z.string().optional(),
+        end: z.string().optional(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    if (parsed.data.start && !isValidDateString(parsed.data.start)) {
+      return reply.status(400).send({ message: "Invalid start date" });
+    }
+    if (parsed.data.end && !isValidDateString(parsed.data.end)) {
+      return reply.status(400).send({ message: "Invalid end date" });
+    }
+    return listDailyReportsForUser(parsed.data.userId, {
+      start: parsed.data.start ?? null,
+      end: parsed.data.end ?? null,
+    });
   });
 
   app.get("/assignments", async (request, reply) => {

@@ -79,6 +79,7 @@ export default function TopNav() {
           <NavItem href="/workspace" label="Workspace" active={pathname.startsWith('/workspace')} />
           <NavItem href="/community" label="Community" active={pathname.startsWith('/community')} />
           <NavItem href="/calendar" label="Calendar" active={pathname.startsWith('/calendar')} />
+          <NavItem href="/reports" label="Reports" active={pathname.startsWith('/reports')} />
           <NavItem href="/about" label="About" active={pathname.startsWith('/about')} />
           <NavItem href="/career" label="Career" active={pathname.startsWith('/career')} />
           {isManager && (
