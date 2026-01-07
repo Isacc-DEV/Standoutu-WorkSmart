@@ -192,6 +192,7 @@ export interface DailyReport {
   reportDate: string;
   status: DailyReportStatus;
   content?: string | null;
+  reviewReason?: string | null;
   createdAt: string;
   updatedAt: string;
   submittedAt?: string | null;
@@ -214,6 +215,16 @@ export interface DailyReportAttachment {
   fileSize: number;
   mimeType: string;
   createdAt: string;
+}
+
+export interface Notification {
+  id: string;
+  userId: string;
+  kind: string;
+  message: string;
+  href?: string | null;
+  createdAt: string;
+  readAt?: string | null;
 }
 
 export type CommunityThreadType = "CHANNEL" | "DM";

@@ -7,6 +7,7 @@ import {
   DailyReport,
   DailyReportAttachment,
   DailyReportWithUser,
+  Notification,
   CommunityMessage,
   CommunityMessageExtended,
   CommunityThread,
@@ -379,6 +380,16 @@ export async function initDb() {
         UNIQUE (message_id, user_id)
       );
 
+      CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        message TEXT NOT NULL,
+        href TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        read_at TIMESTAMP
+      );
+
       ALTER TABLE IF EXISTS users
         ADD COLUMN IF NOT EXISTS avatar_url TEXT;
       ALTER TABLE IF EXISTS "User"
@@ -414,6 +425,8 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_pinned_thread ON community_pinned_messages(thread_id);
       CREATE INDEX IF NOT EXISTS idx_read_receipts_message ON community_message_read_receipts(message_id);
       CREATE INDEX IF NOT EXISTS idx_read_receipts_user ON community_message_read_receipts(user_id);
+      CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id) WHERE read_at IS NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"(email);
       CREATE UNIQUE INDEX IF NOT EXISTS "Account_provider_providerAccountId_key" ON "Account"(provider, "providerAccountId");
       CREATE UNIQUE INDEX IF NOT EXISTS "Session_sessionToken_key" ON "Session"("sessionToken");
@@ -447,6 +460,7 @@ export async function initDb() {
         report_date DATE NOT NULL,
         status TEXT NOT NULL DEFAULT 'draft',
         content TEXT,
+        review_reason TEXT,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW(),
         submitted_at TIMESTAMP,
@@ -485,6 +499,10 @@ export async function initDb() {
 
       DROP TABLE IF EXISTS assignments;
     `);
+
+    await client.query(
+      "ALTER TABLE IF EXISTS daily_reports ADD COLUMN IF NOT EXISTS review_reason TEXT;",
+    );
 
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_community_messages_reply ON community_messages(reply_to_message_id);',
@@ -605,6 +623,22 @@ export async function findUserById(id: string) {
     [id],
   );
   return rows[0];
+}
+
+export async function listActiveUserIds(): Promise<string[]> {
+  const { rows } = await pool.query<{ id: string }>(
+    'SELECT id FROM users WHERE is_active = TRUE',
+  );
+  return rows.map((row) => row.id);
+}
+
+export async function listActiveUserIdsByRole(roles: string[]): Promise<string[]> {
+  if (!roles.length) return [];
+  const { rows } = await pool.query<{ id: string }>(
+    'SELECT id FROM users WHERE is_active = TRUE AND role = ANY($1)',
+    [roles],
+  );
+  return rows.map((row) => row.id);
 }
 
 export async function insertUser(user: User) {
@@ -1000,6 +1034,7 @@ export async function listDailyReportsForUser(
       report_date::text AS "reportDate",
       status,
       content,
+      review_reason AS "reviewReason",
       created_at AS "createdAt",
       updated_at AS "updatedAt",
       submitted_at AS "submittedAt",
@@ -1021,6 +1056,303 @@ export async function listDailyReportsForUser(
   return rows;
 }
 
+export async function countDailyReportsInReview(
+  since?: string | null,
+): Promise<number> {
+  const params: Array<string> = [];
+  let query = `
+    SELECT COUNT(*)::int AS count
+    FROM daily_reports
+    WHERE status = 'in_review'
+  `;
+  if (since) {
+    params.push(since);
+    query += ` AND submitted_at IS NOT NULL AND submitted_at >= $1`;
+  }
+  const { rows } = await pool.query<{ count: number }>(query, params);
+  return rows[0]?.count ?? 0;
+}
+
+export async function countReviewedDailyReportsForUser(
+  userId: string,
+  since?: string | null,
+): Promise<number> {
+  const params: Array<string> = [userId];
+  let query = `
+    SELECT COUNT(*)::int AS count
+    FROM daily_reports
+    WHERE user_id = $1
+      AND status IN ('accepted', 'rejected')
+      AND reviewed_at IS NOT NULL
+  `;
+  if (since) {
+    params.push(since);
+    query += ` AND reviewed_at > $${params.length}`;
+  }
+  const { rows } = await pool.query<{ count: number }>(query, params);
+  return rows[0]?.count ?? 0;
+}
+
+export async function insertNotifications(
+  entries: Array<{
+    userId: string;
+    kind: string;
+    message: string;
+    href?: string | null;
+    createdAt?: string | null;
+  }>,
+) {
+  if (!entries.length) return;
+  const values: string[] = [];
+  const params: Array<string | null> = [];
+  let idx = 1;
+  entries.forEach((entry) => {
+    values.push(
+      `($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`,
+    );
+    params.push(
+      randomUUID(),
+      entry.userId,
+      entry.kind,
+      entry.message,
+      entry.href ?? null,
+      entry.createdAt ?? new Date().toISOString(),
+    );
+  });
+  await pool.query(
+    `
+      INSERT INTO notifications (id, user_id, kind, message, href, created_at)
+      VALUES ${values.join(', ')}
+    `,
+    params,
+  );
+}
+
+export async function listNotificationsForUser(
+  userId: string,
+  options: { unreadOnly?: boolean; limit?: number } = {},
+): Promise<Notification[]> {
+  const params: Array<string | number> = [userId];
+  let query = `
+    SELECT
+      id,
+      user_id AS "userId",
+      kind,
+      message,
+      href,
+      created_at AS "createdAt",
+      read_at AS "readAt"
+    FROM notifications
+    WHERE user_id = $1
+  `;
+  if (options.unreadOnly) {
+    query += ' AND read_at IS NULL';
+  }
+  query += ' ORDER BY created_at DESC';
+  if (options.limit) {
+    params.push(options.limit);
+    query += ` LIMIT $${params.length}`;
+  }
+  const { rows } = await pool.query<Notification>(query, params);
+  return rows;
+}
+
+export async function markNotificationsRead(
+  userId: string,
+  ids?: string[],
+): Promise<void> {
+  if (ids && ids.length > 0) {
+    await pool.query(
+      `
+        UPDATE notifications
+        SET read_at = NOW()
+        WHERE user_id = $1 AND id = ANY($2) AND read_at IS NULL
+      `,
+      [userId, ids],
+    );
+    return;
+  }
+  await pool.query(
+    `
+      UPDATE notifications
+      SET read_at = NOW()
+      WHERE user_id = $1 AND read_at IS NULL
+    `,
+    [userId],
+  );
+}
+
+export async function countUnreadNotifications(userId: string): Promise<number> {
+  const { rows } = await pool.query<{ count: number }>(
+    `
+      SELECT COUNT(*)::int AS count
+      FROM notifications
+      WHERE user_id = $1 AND read_at IS NULL
+    `,
+    [userId],
+  );
+  return rows[0]?.count ?? 0;
+}
+
+export async function listReviewedDailyReportsForUser(
+  userId: string,
+  since?: string | null,
+): Promise<Array<{ id: string; reportDate: string; status: DailyReport['status']; reviewedAt: string }>> {
+  const params: Array<string> = [userId];
+  let query = `
+    SELECT
+      id,
+      report_date::text AS "reportDate",
+      status,
+      reviewed_at AS "reviewedAt"
+    FROM daily_reports
+    WHERE user_id = $1
+      AND status IN ('accepted', 'rejected')
+      AND reviewed_at IS NOT NULL
+  `;
+  if (since) {
+    params.push(since);
+    query += ` AND reviewed_at > $${params.length}`;
+  }
+  query += ' ORDER BY reviewed_at DESC';
+  const { rows } = await pool.query<{
+    id: string;
+    reportDate: string;
+    status: DailyReport['status'];
+    reviewedAt: string;
+  }>(query, params);
+  return rows;
+}
+
+export async function listInReviewReportsWithUsers(): Promise<
+  Array<{ id: string; reportDate: string; submittedAt: string | null; updatedAt: string; userName: string }>
+> {
+  const { rows } = await pool.query<{
+    id: string;
+    reportDate: string;
+    submittedAt: string | null;
+    updatedAt: string;
+    userName: string;
+  }>(
+    `
+      SELECT
+        r.id,
+        r.report_date::text AS "reportDate",
+        r.submitted_at AS "submittedAt",
+        r.updated_at AS "updatedAt",
+        u.name AS "userName"
+      FROM daily_reports r
+      JOIN users u ON u.id = r.user_id
+      WHERE r.status = 'in_review'
+      ORDER BY r.submitted_at DESC NULLS LAST, r.updated_at DESC
+    `,
+  );
+  return rows;
+}
+
+export async function listUnreadCommunityNotifications(userId: string): Promise<
+  Array<{
+    threadId: string;
+    threadType: string;
+    threadName: string | null;
+    unreadCount: number;
+    messageId: string | null;
+    messageBody: string | null;
+    messageCreatedAt: string | null;
+    senderName: string | null;
+  }>
+> {
+  const { rows } = await pool.query<{
+    threadId: string;
+    threadType: string;
+    threadName: string | null;
+    unreadCount: number;
+    messageId: string | null;
+    messageBody: string | null;
+    messageCreatedAt: string | null;
+    senderName: string | null;
+  }>(
+    `
+      SELECT
+        u.thread_id AS "threadId",
+        t.thread_type AS "threadType",
+        t.name AS "threadName",
+        u.unread_count AS "unreadCount",
+        m.id AS "messageId",
+        m.body AS "messageBody",
+        m.created_at AS "messageCreatedAt",
+        sender.name AS "senderName"
+      FROM community_unread_messages u
+      JOIN community_threads t ON t.id = u.thread_id
+      LEFT JOIN LATERAL (
+        SELECT id, body, created_at, sender_id
+        FROM community_messages
+        WHERE thread_id = u.thread_id AND created_at > u.last_read_at
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) m ON TRUE
+      LEFT JOIN users sender ON sender.id = m.sender_id
+      WHERE u.user_id = $1 AND u.unread_count > 0
+      ORDER BY COALESCE(m.created_at, u.updated_at) DESC
+    `,
+    [userId],
+  );
+  return rows;
+}
+
+export async function listInReviewReports(range: {
+  start: string;
+  end: string;
+}): Promise<
+  Array<{
+    id: string;
+    userId: string;
+    reportDate: string;
+    updatedAt: string;
+  }>
+> {
+  const { rows } = await pool.query<{
+    id: string;
+    userId: string;
+    reportDate: string;
+    updatedAt: string;
+  }>(
+    `
+      SELECT
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        updated_at AS "updatedAt"
+      FROM daily_reports
+      WHERE status = 'in_review'
+        AND report_date BETWEEN $1 AND $2
+      ORDER BY report_date ASC, updated_at DESC
+    `,
+    [range.start, range.end],
+  );
+  return rows;
+}
+
+export async function listAcceptedCountsByDate(range: {
+  start: string;
+  end: string;
+}): Promise<Array<{ reportDate: string; count: number }>> {
+  const { rows } = await pool.query<{ reportDate: string; count: number }>(
+    `
+      SELECT
+        report_date::text AS "reportDate",
+        COUNT(*)::int AS count
+      FROM daily_reports
+      WHERE status = 'accepted'
+        AND report_date BETWEEN $1 AND $2
+      GROUP BY report_date
+      ORDER BY report_date ASC
+    `,
+    [range.start, range.end],
+  );
+  return rows;
+}
+
 export async function listDailyReportsByDate(
   reportDate: string,
 ): Promise<DailyReportWithUser[]> {
@@ -1032,6 +1364,7 @@ export async function listDailyReportsByDate(
         r.report_date::text AS "reportDate",
         r.status,
         r.content,
+        r.review_reason AS "reviewReason",
         r.created_at AS "createdAt",
         r.updated_at AS "updatedAt",
         r.submitted_at AS "submittedAt",
@@ -1136,6 +1469,7 @@ export async function findDailyReportByUserAndDate(
         report_date::text AS "reportDate",
         status,
         content,
+        review_reason AS "reviewReason",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
         submitted_at AS "submittedAt",
@@ -1159,6 +1493,7 @@ export async function findDailyReportById(id: string): Promise<DailyReport | und
         report_date::text AS "reportDate",
         status,
         content,
+        review_reason AS "reviewReason",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
         submitted_at AS "submittedAt",
@@ -1179,6 +1514,7 @@ export async function upsertDailyReport(report: {
   reportDate: string;
   status: DailyReport['status'];
   content?: string | null;
+  reviewReason?: string | null;
   submittedAt?: string | null;
   reviewedAt?: string | null;
   reviewedBy?: string | null;
@@ -1191,17 +1527,19 @@ export async function upsertDailyReport(report: {
         report_date,
         status,
         content,
+        review_reason,
         created_at,
         updated_at,
         submitted_at,
         reviewed_at,
         reviewed_by
       )
-      VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), $7, $8, $9)
       ON CONFLICT (user_id, report_date)
       DO UPDATE SET
         status = EXCLUDED.status,
         content = EXCLUDED.content,
+        review_reason = EXCLUDED.review_reason,
         updated_at = NOW(),
         submitted_at = EXCLUDED.submitted_at,
         reviewed_at = EXCLUDED.reviewed_at,
@@ -1212,6 +1550,7 @@ export async function upsertDailyReport(report: {
         report_date::text AS "reportDate",
         status,
         content,
+        review_reason AS "reviewReason",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
         submitted_at AS "submittedAt",
@@ -1224,6 +1563,7 @@ export async function upsertDailyReport(report: {
       report.reportDate,
       report.status,
       report.content ?? null,
+      report.reviewReason ?? null,
       report.submittedAt ?? null,
       report.reviewedAt ?? null,
       report.reviewedBy ?? null,
@@ -1237,6 +1577,7 @@ export async function updateDailyReportStatus(params: {
   status: DailyReport['status'];
   reviewedAt?: string | null;
   reviewedBy?: string | null;
+  reviewReason?: string | null;
 }): Promise<DailyReport | undefined> {
   const { rows } = await pool.query<DailyReport>(
     `
@@ -1244,6 +1585,7 @@ export async function updateDailyReportStatus(params: {
       SET status = $2,
           reviewed_at = $3,
           reviewed_by = $4,
+          review_reason = $5,
           updated_at = NOW()
       WHERE id = $1
       RETURNING
@@ -1252,13 +1594,20 @@ export async function updateDailyReportStatus(params: {
         report_date::text AS "reportDate",
         status,
         content,
+        review_reason AS "reviewReason",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
         submitted_at AS "submittedAt",
         reviewed_at AS "reviewedAt",
         reviewed_by AS "reviewedBy"
     `,
-    [params.id, params.status, params.reviewedAt ?? null, params.reviewedBy ?? null],
+    [
+      params.id,
+      params.status,
+      params.reviewedAt ?? null,
+      params.reviewedBy ?? null,
+      params.reviewReason ?? null,
+    ],
   );
   return rows[0];
 }

@@ -34,7 +34,20 @@ export default function AuthPage() {
       router.replace("/workspace");
     } catch (err) {
       console.error(err);
-      setError("Authentication failed. Check your credentials.");
+      if (err instanceof Error) {
+        let message = err.message || "Authentication failed. Check your credentials.";
+        try {
+          const parsed = JSON.parse(err.message);
+          if (parsed?.message) {
+            message = parsed.message;
+          }
+        } catch {
+          // Ignore JSON parse errors.
+        }
+        setError(message);
+      } else {
+        setError("Authentication failed. Check your credentials.");
+      }
     } finally {
       setLoading(false);
     }

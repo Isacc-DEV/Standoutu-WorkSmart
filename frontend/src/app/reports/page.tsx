@@ -7,7 +7,9 @@ import { DateClickArg, DatesSetArg, EventClickArg, EventContentArg } from '@full
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import TopNav from '../../components/TopNav';
+import AdminReportsView from './AdminReportsView';
 import { api } from '../../lib/api';
+import { getReportsLastSeen, setReportsLastSeen, triggerNotificationRefresh } from '../../lib/notifications';
 import { useAuth } from '../../lib/useAuth';
 
 type DailyReportStatus = 'draft' | 'in_review' | 'accepted' | 'rejected';
@@ -18,6 +20,7 @@ type DailyReport = {
   reportDate: string;
   status: DailyReportStatus;
   content?: string | null;
+  reviewReason?: string | null;
   createdAt: string;
   updatedAt: string;
   submittedAt?: string | null;
@@ -108,6 +111,7 @@ function shiftDate(value: string, days: number) {
 export default function ReportsPage() {
   const router = useRouter();
   const { user, token, loading } = useAuth();
+  const isReviewer = user?.role === 'ADMIN' || user?.role === 'MANAGER';
   const [reports, setReports] = useState<DailyReport[]>([]);
   const [viewRange, setViewRange] = useState<ViewRange | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => toDateKey(new Date()));
@@ -129,6 +133,7 @@ export default function ReportsPage() {
     if (loading) return;
     if (!user || !token) {
       router.replace('/auth');
+      return;
     }
   }, [loading, user, token, router]);
 
@@ -151,9 +156,50 @@ export default function ReportsPage() {
   const selectedStatus = selectedReport?.status ?? 'draft';
   const statusConfig = STATUS_CONFIG[selectedStatus];
   const isLocked = selectedStatus === 'accepted';
-  const yesterdayKey = useMemo(() => shiftDate(todayKey, -1), [todayKey]);
-  const canEditDate = selectedDate === todayKey || selectedDate === yesterdayKey;
+  const canEditDate = selectedDate <= todayKey;
   const canEdit = isEditing && !isLocked && canEditDate;
+
+  useEffect(() => {
+    if (!user || isReviewer) return;
+    if (!selectedReport) return;
+    if (selectedReport.status !== 'accepted' && selectedReport.status !== 'rejected') return;
+    const lastSeen = getReportsLastSeen(user.id, user.role);
+    const lastSeenTime = lastSeen ? Date.parse(lastSeen) : null;
+    const reviewedAt = selectedReport.reviewedAt ?? selectedReport.updatedAt ?? null;
+    const reviewedTime = reviewedAt ? Date.parse(reviewedAt) : null;
+    if (reviewedTime !== null && Number.isNaN(reviewedTime)) return;
+    if (lastSeenTime !== null && !Number.isNaN(lastSeenTime) && reviewedTime !== null) {
+      if (reviewedTime <= lastSeenTime) return;
+    }
+    setReportsLastSeen(user.id, user.role);
+  }, [
+    user,
+    isReviewer,
+    selectedReport?.id,
+    selectedReport?.status,
+    selectedReport?.reviewedAt,
+    selectedReport?.updatedAt,
+  ]);
+
+  useEffect(() => {
+    if (!user || isReviewer) return;
+    if (reports.length === 0) return;
+    const lastSeen = getReportsLastSeen(user.id, user.role);
+    const lastSeenTime = lastSeen ? Date.parse(lastSeen) : null;
+    const hasFreshReview = reports.some((report) => {
+      if (report.status !== 'accepted' && report.status !== 'rejected') return false;
+      const reviewedAt = report.reviewedAt ?? report.updatedAt ?? null;
+      const reviewedTime = reviewedAt ? Date.parse(reviewedAt) : null;
+      if (reviewedTime === null || Number.isNaN(reviewedTime)) return false;
+      if (lastSeenTime !== null && !Number.isNaN(lastSeenTime)) {
+        return reviewedTime > lastSeenTime;
+      }
+      return true;
+    });
+    if (hasFreshReview) {
+      setReportsLastSeen(user.id, user.role);
+    }
+  }, [user, isReviewer, reports]);
 
   useEffect(() => {
     setDraftContent(selectedReport?.content ?? '');
@@ -174,7 +220,7 @@ export default function ReportsPage() {
   useEffect(() => {
     if (!isEditing || canEditDate) return;
     setIsEditing(false);
-    setActionError('Only today and yesterday can be edited.');
+    setActionError('Future reports cannot be edited yet.');
   }, [isEditing, canEditDate]);
 
   const loadAttachments = useCallback(async (reportId: string) => {
@@ -200,18 +246,28 @@ export default function ReportsPage() {
     void loadAttachments(selectedReport.id);
   }, [selectedReport?.id, loadAttachments]);
 
-  const fetchReports = useCallback(async (range: ViewRange) => {
-    setReportsLoading(true);
-    setReportsError('');
+  const fetchReports = useCallback(async (range: ViewRange, options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) {
+      setReportsLoading(true);
+      setReportsError('');
+    }
     try {
       const qs = new URLSearchParams({ start: range.start, end: range.end });
       const data = await api<DailyReport[]>(`/daily-reports?${qs.toString()}`);
       setReports(Array.isArray(data) ? data : []);
+      if (silent) {
+        setReportsError('');
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to load reports.';
-      setReportsError(message);
+      if (!silent) {
+        const message = err instanceof Error ? err.message : 'Unable to load reports.';
+        setReportsError(message);
+      }
     } finally {
-      setReportsLoading(false);
+      if (!silent) {
+        setReportsLoading(false);
+      }
     }
   }, []);
 
@@ -219,6 +275,37 @@ export default function ReportsPage() {
     if (!viewRange || !token) return;
     void fetchReports(viewRange);
   }, [fetchReports, token, viewRange]);
+
+  useEffect(() => {
+    if (!viewRange || !token || isReviewer || isEditing) return;
+    let active = true;
+    const refresh = () => {
+      if (!active || isEditing) return;
+      void fetchReports(viewRange, { silent: true }).finally(() => {
+        if (active) {
+          triggerNotificationRefresh();
+        }
+      });
+    };
+    refresh();
+    const intervalId = window.setInterval(refresh, 30000);
+    const handleFocus = () => {
+      refresh();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [viewRange?.start, viewRange?.end, token, isReviewer, isEditing, fetchReports]);
 
   const handleDatesSet = useCallback((info: DatesSetArg) => {
     const start = normalizeDateKey(info.startStr);
@@ -228,13 +315,25 @@ export default function ReportsPage() {
   }, []);
 
   const handleDateClick = useCallback((info: DateClickArg) => {
-    setSelectedDate(normalizeDateKey(info.dateStr));
-  }, []);
+    const nextDate = normalizeDateKey(info.dateStr);
+    setSelectedDate(nextDate);
+    if (!user || isReviewer) return;
+    const report = reportMap.get(nextDate);
+    if (report?.status === 'accepted' || report?.status === 'rejected') {
+      setReportsLastSeen(user.id, user.role);
+    }
+  }, [user, isReviewer, reportMap]);
 
   const handleEventClick = useCallback((info: EventClickArg) => {
     if (!info.event.start) return;
-    setSelectedDate(toDateKey(info.event.start));
-  }, []);
+    const nextDate = toDateKey(info.event.start);
+    setSelectedDate(nextDate);
+    if (!user || isReviewer) return;
+    const report = reportMap.get(nextDate);
+    if (report?.status === 'accepted' || report?.status === 'rejected') {
+      setReportsLastSeen(user.id, user.role);
+    }
+  }, [user, isReviewer, reportMap]);
 
   const upsertReportInState = useCallback((next: DailyReport) => {
     setReports((prev) => {
@@ -363,7 +462,7 @@ export default function ReportsPage() {
 
   const statusNote = useMemo(() => {
     if (selectedStatus === 'accepted') return 'This report is accepted and locked.';
-    if (!canEditDate) return 'Only today and yesterday can be edited.';
+    if (!canEditDate) return 'Future reports cannot be edited yet.';
     if (selectedStatus === 'rejected') return 'Rejected. Update and resubmit when ready.';
     if (selectedStatus === 'in_review') return 'In review with your manager.';
     return 'Draft mode. Click edit to update.';
@@ -372,7 +471,7 @@ export default function ReportsPage() {
   const handleStartEdit = useCallback(() => {
     if (isLocked) return;
     if (!canEditDate) {
-      setActionError('Only today and yesterday can be edited.');
+      setActionError('Future reports cannot be edited yet.');
       return;
     }
     setIsEditing(true);
@@ -428,9 +527,20 @@ export default function ReportsPage() {
   );
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-[#f4f8ff] via-[#eef2ff] to-white text-slate-900">
+    <main
+      className={
+        isReviewer
+          ? 'min-h-screen bg-white text-slate-900'
+          : 'min-h-screen bg-gradient-to-b from-[#f4f8ff] via-[#eef2ff] to-white text-slate-900'
+      }
+    >
       <TopNav />
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      {isReviewer ? (
+        <div className="mx-auto w-full max-w-screen-2xl px-4 py-6">
+          <AdminReportsView token={token} />
+        </div>
+      ) : (
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
         <div className="space-y-2">
           <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">Daily reports</p>
           <h1 className="text-3xl font-semibold text-slate-900">Your month at a glance</h1>
@@ -536,6 +646,14 @@ export default function ReportsPage() {
               <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 {statusNote}
               </div>
+              {selectedReport?.status === 'rejected' && selectedReport.reviewReason ? (
+                <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-rose-500">
+                    Rejection reason
+                  </div>
+                  <div className="mt-2 whitespace-pre-wrap">{selectedReport.reviewReason}</div>
+                </div>
+              ) : null}
 
               <div className="mt-4">
                 <label className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
@@ -634,6 +752,7 @@ export default function ReportsPage() {
           </aside>
         </div>
       </div>
+    )}
     </main>
   );
 }

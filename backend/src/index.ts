@@ -25,6 +25,13 @@ import {
   addMessageReaction,
   bulkAddReadReceipts,
   closeAssignmentById,
+  listAcceptedCountsByDate,
+  countDailyReportsInReview,
+  countReviewedDailyReportsForUser,
+  countUnreadNotifications,
+  listReviewedDailyReportsForUser,
+  listInReviewReports,
+  listInReviewReportsWithUsers,
   deleteCommunityChannel,
   deleteMessage,
   deleteLabelAlias,
@@ -46,6 +53,7 @@ import {
   getMessageReadReceipts,
   incrementUnreadCount,
   initDb,
+  insertNotifications,
   insertApplication,
   insertProfile,
   listProfileAccountsForUser,
@@ -77,6 +85,10 @@ import {
   listDailyReportsByDate,
   listDailyReportAttachments,
   listDailyReportsForUser,
+  listActiveUserIds,
+  listActiveUserIdsByRole,
+  listNotificationsForUser,
+  listUnreadCommunityNotifications,
   listLabelAliases,
   listMessageAttachments,
   listMessageReactions,
@@ -85,6 +97,7 @@ import {
   listProfilesForBidder,
   listUserPresences,
   markThreadAsRead,
+  markNotificationsRead,
   pinMessage,
   pool,
   removeMessageReaction,
@@ -557,6 +570,40 @@ function formatPhone(contact?: BaseInfo["contact"]) {
 
 function normalizeChannelName(input: string) {
   return input.replace(/^#+/, "").trim();
+}
+
+function formatShortDate(value: string) {
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = String(date.getFullYear()).slice(-2);
+  return `${day}/${month}/${year}`;
+}
+
+async function notifyUsers(
+  userIds: string[],
+  payload: { kind: string; message: string; href?: string | null },
+) {
+  if (!userIds.length) return;
+  await insertNotifications(
+    userIds.map((userId) => ({
+      userId,
+      kind: payload.kind,
+      message: payload.message,
+      href: payload.href ?? null,
+    })),
+  );
+}
+
+async function notifyAdmins(payload: { kind: string; message: string; href?: string | null }) {
+  const adminIds = await listActiveUserIdsByRole(["ADMIN"]);
+  await notifyUsers(adminIds, payload);
+}
+
+async function notifyAllUsers(payload: { kind: string; message: string; href?: string | null }) {
+  const userIds = await listActiveUserIds();
+  await notifyUsers(userIds, payload);
 }
 
 function readWsToken(req: any) {
@@ -1535,7 +1582,14 @@ async function bootstrap() {
       email: z.string().email(),
       password: z.string().optional(),
     });
-    const body = schema.parse(request.body);
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.errors[0];
+      const field = issue?.path?.[0];
+      const message = `${field ? `${field}: ` : ""}${issue?.message ?? "Invalid login payload"}`;
+      return reply.status(400).send({ message });
+    }
+    const body = parsed.data;
     const user = await findUserByEmail(body.email);
     if (!user) {
       return reply.status(401).send({ message: "Invalid credentials" });
@@ -1558,7 +1612,14 @@ async function bootstrap() {
       name: z.string().min(2),
       avatarUrl: z.string().trim().optional(),
     });
-    const body = schema.parse(request.body);
+    const parsed = schema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.errors[0];
+      const field = issue?.path?.[0];
+      const message = `${field ? `${field}: ` : ""}${issue?.message ?? "Invalid signup payload"}`;
+      return reply.status(400).send({ message });
+    }
+    const body = parsed.data;
     const exists = await findUserByEmail(body.email);
     if (exists) {
       return reply.status(409).send({ message: "Email already registered" });
@@ -1578,6 +1639,15 @@ async function bootstrap() {
       password: hashed,
     };
     await insertUser(user);
+    try {
+      await notifyAdmins({
+        kind: "system",
+        message: `New join request from ${user.name}.`,
+        href: "/admin/join-requests",
+      });
+    } catch (err) {
+      request.log.error({ err }, "join request notification failed");
+    }
     const token = signToken(user);
     return { token, user };
   });
@@ -1714,6 +1784,15 @@ async function bootstrap() {
       updatedAt: now,
     };
     await insertProfile(profile);
+    try {
+      await notifyAdmins({
+        kind: "system",
+        message: `New profile ${profile.displayName} created.`,
+        href: "/manager/profiles",
+      });
+    } catch (err) {
+      request.log.error({ err }, "profile create notification failed");
+    }
     return profile;
   });
 
@@ -1806,6 +1885,15 @@ async function bootstrap() {
       createdAt: now,
       updatedAt: now,
     });
+    try {
+      await notifyAllUsers({
+        kind: "system",
+        message: `Resume template ${created.name} created.`,
+        href: "/manager/resume-templates",
+      });
+    } catch (err) {
+      request.log.error({ err }, "resume template create notification failed");
+    }
     return created;
   });
 
@@ -1847,6 +1935,17 @@ async function bootstrap() {
       description,
       html,
     });
+    if (updated) {
+      try {
+        await notifyAllUsers({
+          kind: "system",
+          message: `Resume template ${updated.name} updated.`,
+          href: "/manager/resume-templates",
+        });
+      } catch (err) {
+        request.log.error({ err }, "resume template update notification failed");
+      }
+    }
     return updated;
   });
 
@@ -2238,6 +2337,7 @@ async function bootstrap() {
       reportDate: body.date,
       status: "draft",
       content: content ? content : null,
+      reviewReason: existing?.reviewReason ?? null,
       submittedAt: null,
       reviewedAt: null,
       reviewedBy: null,
@@ -2287,6 +2387,7 @@ async function bootstrap() {
       reportDate: body.date,
       status: "in_review",
       content: content ? content : null,
+      reviewReason: null,
       submittedAt: new Date().toISOString(),
       reviewedAt: null,
       reviewedBy: null,
@@ -2308,8 +2409,13 @@ async function bootstrap() {
     const { id } = request.params as { id: string };
     const schema = z.object({
       status: z.enum(["accepted", "rejected"]),
+      reviewReason: z.string().optional().nullable(),
     });
     const body = schema.parse(request.body ?? {});
+    const normalizedReason = trimString(body.reviewReason ?? "");
+    if (body.status === "rejected" && !normalizedReason) {
+      return reply.status(400).send({ message: "Rejection reason is required" });
+    }
     const report = await findDailyReportById(id);
     if (!report) {
       return reply.status(404).send({ message: "Report not found" });
@@ -2319,6 +2425,7 @@ async function bootstrap() {
       status: body.status,
       reviewedAt: new Date().toISOString(),
       reviewedBy: actor.id,
+      reviewReason: body.status === "rejected" ? normalizedReason : null,
     });
     return updated;
   });
@@ -2385,6 +2492,156 @@ async function bootstrap() {
     }
   });
 
+  app.get("/notifications/summary", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const parsed = z
+      .object({
+        since: z.string().optional(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    let since: string | null = null;
+    if (parsed.data.since) {
+      const trimmed = trimString(parsed.data.since);
+      if (trimmed) {
+        const parsedDate = new Date(trimmed);
+        if (Number.isNaN(parsedDate.getTime())) {
+          return reply.status(400).send({ message: "Invalid since" });
+        }
+        since = parsedDate.toISOString();
+      }
+    }
+    const isReviewer = actor.role === "ADMIN" || actor.role === "MANAGER";
+    const reportCount = isReviewer
+      ? await countDailyReportsInReview(since)
+      : await countReviewedDailyReportsForUser(actor.id, since);
+    const systemCount = await countUnreadNotifications(actor.id);
+    return { reportCount, systemCount };
+  });
+
+  app.get("/notifications/list", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const parsed = z
+      .object({
+        since: z.string().optional(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    let since: string | null = null;
+    if (parsed.data.since) {
+      const trimmed = trimString(parsed.data.since);
+      if (trimmed) {
+        const parsedDate = new Date(trimmed);
+        if (Number.isNaN(parsedDate.getTime())) {
+          return reply.status(400).send({ message: "Invalid since" });
+        }
+        since = parsedDate.toISOString();
+      }
+    }
+    const isReviewer = actor.role === "ADMIN" || actor.role === "MANAGER";
+    const communityItems = await listUnreadCommunityNotifications(actor.id);
+    const systemItems = await listNotificationsForUser(actor.id, {
+      unreadOnly: true,
+      limit: 50,
+    });
+
+    const notifications = [];
+
+    communityItems.forEach((item) => {
+      const senderName = item.senderName?.trim() || "Someone";
+      if (item.threadType === "DM") {
+        notifications.push({
+          id: `community:${item.threadId}:${item.messageId ?? "latest"}`,
+          kind: "community",
+          message: `You received message from ${senderName}.`,
+          createdAt: item.messageCreatedAt ?? new Date().toISOString(),
+          href: "/community",
+        });
+      } else {
+        const channelName = item.threadName?.trim() || "community";
+        notifications.push({
+          id: `community:${item.threadId}:${item.messageId ?? "latest"}`,
+          kind: "community",
+          message: `${senderName} posted a new message on #${channelName} channel.`,
+          createdAt: item.messageCreatedAt ?? new Date().toISOString(),
+          href: "/community",
+        });
+      }
+    });
+
+    if (isReviewer) {
+      const reportItems = await listInReviewReportsWithUsers();
+      reportItems.forEach((item) => {
+        const reportDate = formatShortDate(item.reportDate);
+        const submittedAt = item.submittedAt ?? item.updatedAt;
+        const submittedTime = item.submittedAt ? Date.parse(item.submittedAt) : NaN;
+        const updatedTime = Date.parse(item.updatedAt);
+        const isUpdated =
+          !Number.isNaN(submittedTime) &&
+          !Number.isNaN(updatedTime) &&
+          updatedTime > submittedTime;
+        notifications.push({
+          id: `report:${item.id}`,
+          kind: "report",
+          message: `${item.userName} ${isUpdated ? "updated" : "sent"} ${reportDate} report.`,
+          createdAt: submittedAt,
+          href: "/reports",
+        });
+      });
+    } else {
+      const reportItems = await listReviewedDailyReportsForUser(actor.id, since);
+      reportItems.forEach((item) => {
+        const reportDate = formatShortDate(item.reportDate);
+        const statusLabel = item.status === "accepted" ? "accepted" : "rejected";
+        notifications.push({
+          id: `report:${item.id}`,
+          kind: "report",
+          message: `${reportDate} report ${statusLabel}.`,
+          createdAt: item.reviewedAt,
+          href: "/reports",
+        });
+      });
+    }
+
+    systemItems.forEach((item) => {
+      notifications.push({
+        id: item.id,
+        kind: "system",
+        message: item.message,
+        createdAt: item.createdAt,
+        href: item.href ?? undefined,
+      });
+    });
+
+    if (systemItems.length > 0) {
+      await markNotificationsRead(
+        actor.id,
+        systemItems.map((item) => item.id),
+      );
+    }
+
+    notifications.sort((a, b) => {
+      const aTime = Date.parse(a.createdAt);
+      const bTime = Date.parse(b.createdAt);
+      if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0;
+      return bTime - aTime;
+    });
+
+    return { notifications };
+  });
+
   app.get("/admin/daily-reports/by-date", async (request, reply) => {
     if (forbidObserver(reply, request.authUser)) return;
     const actor = request.authUser;
@@ -2402,6 +2659,58 @@ async function bootstrap() {
       return reply.status(400).send({ message: "Invalid date" });
     }
     return listDailyReportsByDate(parsed.data.date);
+  });
+
+  app.get("/admin/daily-reports/in-review", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can view reports" });
+    }
+    const parsed = z
+      .object({
+        start: z.string(),
+        end: z.string(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    if (!isValidDateString(parsed.data.start) || !isValidDateString(parsed.data.end)) {
+      return reply.status(400).send({ message: "Invalid date range" });
+    }
+    return listInReviewReports({
+      start: parsed.data.start,
+      end: parsed.data.end,
+    });
+  });
+
+  app.get("/admin/daily-reports/accepted-by-date", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can view reports" });
+    }
+    const parsed = z
+      .object({
+        start: z.string(),
+        end: z.string(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    if (!isValidDateString(parsed.data.start) || !isValidDateString(parsed.data.end)) {
+      return reply.status(400).send({ message: "Invalid date range" });
+    }
+    return listAcceptedCountsByDate({
+      start: parsed.data.start,
+      end: parsed.data.end,
+    });
   });
 
   app.get("/admin/daily-reports/by-user", async (request, reply) => {
@@ -2482,6 +2791,20 @@ async function bootstrap() {
       payload: { profileId: body.profileId, bidderUserId: body.bidderUserId },
       createdAt: new Date().toISOString(),
     });
+    try {
+      await notifyAdmins({
+        kind: "system",
+        message: `Profile ${profile.displayName} assigned to ${bidder.name}.`,
+        href: "/manager/profiles",
+      });
+      await notifyUsers([bidder.id], {
+        kind: "system",
+        message: `You were assigned profile ${profile.displayName}.`,
+        href: "/workspace",
+      });
+    } catch (err) {
+      request.log.error({ err }, "assignment notification failed");
+    }
     return newAssignment;
   });
 
@@ -2581,6 +2904,15 @@ async function bootstrap() {
       userId: actor.id,
       role: "OWNER",
     });
+    try {
+      await notifyAllUsers({
+        kind: "system",
+        message: `Channel #${created.name} created.`,
+        href: "/community",
+      });
+    } catch (err) {
+      request.log.error({ err }, "channel create notification failed");
+    }
     return created;
   });
 
@@ -2627,6 +2959,17 @@ async function bootstrap() {
       nameKey,
       description,
     });
+    if (updated) {
+      try {
+        await notifyAllUsers({
+          kind: "system",
+          message: `Channel #${updated.name} updated.`,
+          href: "/community",
+        });
+      } catch (err) {
+        request.log.error({ err }, "channel update notification failed");
+      }
+    }
     return updated ?? reply.status(404).send({ message: "Channel not found" });
   });
 
@@ -2644,6 +2987,15 @@ async function bootstrap() {
       return reply.status(404).send({ message: "Channel not found" });
     }
     await deleteCommunityChannel(id);
+    try {
+      await notifyAllUsers({
+        kind: "system",
+        message: `Channel #${existing.name ?? "channel"} removed.`,
+        href: "/community",
+      });
+    } catch (err) {
+      request.log.error({ err }, "channel delete notification failed");
+    }
     return { status: "deleted", id };
   });
 
@@ -3511,11 +3863,31 @@ async function bootstrap() {
       role: z.enum(["ADMIN", "MANAGER", "BIDDER", "OBSERVER"]),
     });
     const body = schema.parse(request.body);
+    const existing = await findUserById(id);
+    if (!existing) {
+      return reply.status(404).send({ message: "User not found" });
+    }
     await pool.query("UPDATE users SET role = $1 WHERE id = $2", [
       body.role,
       id,
     ]);
     const updated = await findUserById(id);
+    if (updated) {
+      const roleLabel = updated.role.toLowerCase();
+      const message =
+        existing.role === "OBSERVER" && updated.role !== "OBSERVER"
+          ? `Your account was approved as ${roleLabel}.`
+          : `Your role was updated to ${roleLabel}.`;
+      try {
+        await notifyUsers([updated.id], {
+          kind: "system",
+          message,
+          href: "/workspace",
+        });
+      } catch (err) {
+        request.log.error({ err }, "role change notification failed");
+      }
+    }
     return updated;
   });
 
