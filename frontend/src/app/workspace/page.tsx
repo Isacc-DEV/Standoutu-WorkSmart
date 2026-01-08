@@ -29,6 +29,7 @@ type WebviewHandle = HTMLElement & {
   executeJavaScript: (code: string, userGesture?: boolean) => Promise<unknown>;
   addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => void;
   removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => void;
+  loadURL?: (url: string) => Promise<void> | void;
 };
 
 type User = {
@@ -544,17 +545,31 @@ export default function Page() {
       setWebviewStatus("loading");
       setCheckEnabled(false);
     };
+    const handleNewWindow = (event: Event) => {
+      const popup = event as Event & { url?: string; preventDefault?: () => void };
+      if (typeof popup.preventDefault === "function") {
+        popup.preventDefault();
+      }
+      if (!popup.url) return;
+      if (view.loadURL) {
+        void view.loadURL(popup.url);
+      } else {
+        view.setAttribute("src", popup.url);
+      }
+    };
     view.addEventListener("dom-ready", handleDomReady);
     view.addEventListener("did-stop-loading", handleStop);
     view.addEventListener("did-finish-load", handleReady);
     view.addEventListener("did-fail-load", handleFail);
     view.addEventListener("did-start-loading", handleStart);
+    view.addEventListener("new-window", handleNewWindow);
     return () => {
       view.removeEventListener("dom-ready", handleDomReady);
       view.removeEventListener("did-stop-loading", handleStop);
       view.removeEventListener("did-finish-load", handleReady);
       view.removeEventListener("did-fail-load", handleFail);
       view.removeEventListener("did-start-loading", handleStart);
+      view.removeEventListener("new-window", handleNewWindow);
     };
   }, [isElectron, browserSrc]);
 

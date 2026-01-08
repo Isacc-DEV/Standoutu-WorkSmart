@@ -22,6 +22,24 @@ let embeddedFrontendUrl;
 let embeddedNextApp;
 const jobWindows = new Map();
 
+function attachWebviewPopupHandler(contents) {
+  if (!contents || contents.getType() !== 'webview') return;
+  contents.setWindowOpenHandler(({ url }) => {
+    if (url && /^https?:/i.test(url)) {
+      contents.loadURL(url).catch(() => undefined);
+      return { action: 'deny' };
+    }
+    if (url) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+}
+
+app.on('web-contents-created', (_event, contents) => {
+  attachWebviewPopupHandler(contents);
+});
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1600,
