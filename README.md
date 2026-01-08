@@ -36,6 +36,14 @@ npm --workspace electron start
 ```
 - Electron auto-hosts the same Next.js UI when `FRONTEND_URL` is unreachable (it boots an embedded Next server on port `3300`). If both fail, it falls back to the minimal shell. Set `API_BASE` in your env to point at your backend. `FRONTEND_URL` still overrides the frontend URL when available.
 
+Unpacked Electron build (folder output, no installer/asar, includes embedded frontend):
+```bash
+npm --workspace electron run build:unpacked
+```
+- Builds a standalone Next.js server and stages it into `electron/embedded-frontend`, then packages the app.
+- Output goes to `electron/dist` (for Windows: `electron/dist/win-unpacked`).
+- To target a non-local API, set `NEXT_PUBLIC_API_BASE` before building so it is baked into the frontend bundle.
+
 Open http://localhost:3000 and sign in via `/auth` (or use Azure AD if configured).
 
 ## Backend overview (`backend/src`)

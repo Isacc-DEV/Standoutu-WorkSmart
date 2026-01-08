@@ -2,14 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import FullCalendar from '@fullcalendar/react';
-import {
-  DateClickArg,
+import type {
   DatesSetArg,
   EventClickArg,
-  DayCellContentArg,
+  DayCellContentArg
 } from '@fullcalendar/core';
 import dayGridPlugin from '@fullcalendar/daygrid';
-import interactionPlugin from '@fullcalendar/interaction';
+import interactionPlugin, { type DateClickArg } from '@fullcalendar/interaction';
 import { api } from '../../lib/api';
 import type { ClientUser } from '../../lib/auth';
 import { triggerNotificationRefresh } from '../../lib/notifications';
@@ -679,7 +678,7 @@ export default function AdminReportsView({ token }: { token: string | null }) {
 
   return (
     <>
-      <style jsx global>{`
+      <style>{`
         .admin-reports-calendar .fc-daygrid-day-top {
           display: block;
         }

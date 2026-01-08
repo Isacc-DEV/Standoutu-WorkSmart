@@ -8,6 +8,8 @@ if (process.stderr) {
 }
 const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
 
@@ -20,6 +22,7 @@ const JOB_WINDOW_PARTITION = 'persist:smartwork-jobview';
 let embeddedFrontendServer;
 let embeddedFrontendUrl;
 let embeddedNextApp;
+let embeddedFrontendProcess;
 const jobWindows = new Map();
 
 function attachWebviewPopupHandler(contents) {
@@ -34,6 +37,69 @@ function attachWebviewPopupHandler(contents) {
     }
     return { action: 'deny' };
   });
+}
+
+function shouldUseStandaloneFrontend() {
+  return (
+    Boolean(process.env.EMBEDDED_FRONTEND_PATH) ||
+    process.env.ELECTRON_USE_EMBEDDED_FRONTEND === '1' ||
+    app.isPackaged
+  );
+}
+
+function resolveEmbeddedFrontendDir() {
+  if (process.env.EMBEDDED_FRONTEND_PATH) {
+    return path.resolve(process.env.EMBEDDED_FRONTEND_PATH);
+  }
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'embedded-frontend');
+  }
+  return path.join(__dirname, 'embedded-frontend');
+}
+
+function hasStandaloneFrontend(dir) {
+  if (!dir) return false;
+  return fs.existsSync(path.join(dir, 'server.js'));
+}
+
+function startStandaloneFrontend(dir) {
+  if (embeddedFrontendProcess) return;
+  const serverPath = path.join(dir, 'server.js');
+  if (!fs.existsSync(serverPath)) {
+    throw new Error(`Embedded frontend server not found at ${serverPath}`);
+  }
+
+  embeddedFrontendProcess = spawn(process.execPath, [serverPath], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      PORT: String(EMBEDDED_FRONTEND_PORT),
+      HOSTNAME: '127.0.0.1',
+      NODE_ENV: 'production',
+      ELECTRON_RUN_AS_NODE: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  embeddedFrontendProcess.stdout.on('data', (data) => {
+    const text = data.toString().trim();
+    if (text) console.log(`[embedded-frontend] ${text}`);
+  });
+  embeddedFrontendProcess.stderr.on('data', (data) => {
+    const text = data.toString().trim();
+    if (text) console.warn(`[embedded-frontend] ${text}`);
+  });
+  embeddedFrontendProcess.on('exit', (code) => {
+    console.warn(`[embedded-frontend] exited with code ${code ?? 'unknown'}`);
+    embeddedFrontendProcess = undefined;
+  });
+}
+
+function stopStandaloneFrontend() {
+  if (embeddedFrontendProcess && !embeddedFrontendProcess.killed) {
+    embeddedFrontendProcess.kill();
+  }
 }
 
 app.on('web-contents-created', (_event, contents) => {
@@ -184,6 +250,7 @@ app.on('before-quit', () => {
   if (embeddedNextApp?.close) {
     embeddedNextApp.close().catch(() => undefined);
   }
+  stopStandaloneFrontend();
 });
 
 function checkUrl(url) {
@@ -212,6 +279,19 @@ async function waitForUrl(url, attempts = 15, delayMs = 400) {
 
 async function startEmbeddedFrontend() {
   if (embeddedFrontendUrl) return embeddedFrontendUrl;
+  if (shouldUseStandaloneFrontend()) {
+    const embeddedDir = resolveEmbeddedFrontendDir();
+    if (hasStandaloneFrontend(embeddedDir)) {
+      console.log(`[electron] starting embedded frontend from ${embeddedDir}`);
+      startStandaloneFrontend(embeddedDir);
+      embeddedFrontendUrl = `http://localhost:${EMBEDDED_FRONTEND_PORT}`;
+      return embeddedFrontendUrl;
+    }
+    if (app.isPackaged) {
+      throw new Error(`Embedded frontend missing at ${embeddedDir}`);
+    }
+    console.warn(`[electron] embedded frontend not found at ${embeddedDir}; falling back to dev server.`);
+  }
   // Force the same API base for the embedded server so it matches the desktop shell expectations.
   if (!process.env.NEXT_PUBLIC_API_BASE) {
     process.env.NEXT_PUBLIC_API_BASE = API_BASE;

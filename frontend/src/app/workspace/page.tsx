@@ -1579,7 +1579,7 @@ export default function Page() {
                         key={browserSrc}
                         src={browserSrc}
                         partition={webviewPartition}
-                        allowpopups="true"
+                        allowpopups={true}
                         style={{ height: "100%", width: "100%", backgroundColor: "#020617" }}
                       />
                       <div className="absolute top-2 right-3 flex items-center gap-2 text-[11px] text-slate-800">

@@ -9,6 +9,8 @@
 !.yarn/versions
 backend/dist/
 backend/node_modules/
+electron/dist/
+electron/embedded-frontend/
 
 # testing
 /coverage

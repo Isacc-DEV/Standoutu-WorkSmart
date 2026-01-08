@@ -105,7 +105,9 @@ const EMOJI_DATA = {
       '✨', '⚡', '🔥', '💫', '🌈', '☀️', '🌤️', '⛅', '🌥️', '☁️',
     ],
   },
-};
+} as const;
+
+type EmojiCategory = keyof typeof EMOJI_DATA;
 const EMOJI_SHORTCUTS: { [key: string]: string } = {
   ':thumbs-up:': '👍',
   ':thumbsup:': '👍',
@@ -137,11 +139,11 @@ const EMOJI_SHORTCUTS: { [key: string]: string } = {
 interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
   onClose: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }
 
 export function EmojiPicker({ onSelect, onClose, buttonRef }: EmojiPickerProps) {
-  const [activeTab, setActiveTab] = useState<string>('Smileys & Emotion');
+  const [activeTab, setActiveTab] = useState<EmojiCategory>('Smileys & Emotion');
   const [searchTerm, setSearchTerm] = useState('');
   const pickerRef = useRef<HTMLDivElement>(null);
 
@@ -177,7 +179,7 @@ export function EmojiPicker({ onSelect, onClose, buttonRef }: EmojiPickerProps) 
     >
       {/* Tabs at top */}
       <div className="flex border-b border-slate-200 bg-slate-50">
-        {Object.entries(EMOJI_DATA).map(([category, data]) => (
+        {(Object.entries(EMOJI_DATA) as Array<[EmojiCategory, (typeof EMOJI_DATA)[EmojiCategory]]>).map(([category, data]) => (
           <button
             key={category}
             onClick={() => {

@@ -187,7 +187,7 @@ export default function TopNav() {
             undefined,
             token,
           ),
-          api<{ reportCount?: number }>(reportUrl, undefined, token),
+          api<{ reportCount?: number; systemCount?: number }>(reportUrl, undefined, token),
         ]);
         let communityTotal: number | null = null;
         if (communityResult.status === 'fulfilled') {

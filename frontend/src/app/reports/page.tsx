@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import FullCalendar from '@fullcalendar/react';
-import { DateClickArg, DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core';
+import type { DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core';
 import dayGridPlugin from '@fullcalendar/daygrid';
-import interactionPlugin from '@fullcalendar/interaction';
+import interactionPlugin, { type DateClickArg } from '@fullcalendar/interaction';
 import TopNav from '../../components/TopNav';
 import { api } from '../../lib/api';
 import { getReportsLastSeen, setReportsLastSeen, triggerNotificationRefresh } from '../../lib/notifications';

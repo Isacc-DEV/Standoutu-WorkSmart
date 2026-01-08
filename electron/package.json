@@ -5,9 +5,35 @@
   "main": "main.js",
   "scripts": {
     "start": "set ELECTRON_RUN_AS_NODE=&& ..\\node_modules\\electron\\dist\\electron.exe .",
+    "prepare:embedded": "node ..\\scripts\\prepare-embedded-frontend.js",
+    "build:unpacked": "npm run prepare:embedded && npx --yes electron-builder@24.13.3 --dir",
     "lint": "echo \"no lint configured for electron\""
   },
-  "dependencies": {
-    "electron": "^39.2.6"
+  "devDependencies": {
+    "electron": "39.2.6",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.smartwork.desktop",
+    "productName": "SmartWork",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "fallback.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "embedded-frontend",
+        "to": "embedded-frontend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   }
 }

@@ -382,7 +382,7 @@ export function CommunityContent() {
 
   return (
     <main className="min-h-screen text-slate-900" style={layoutStyle}>
-      <style jsx>{`
+      <style>{`
         @keyframes highlight {
           0%, 100% { background-color: transparent; }
           50% { background-color: rgba(74, 222, 128, 0.15); }
