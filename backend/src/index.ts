@@ -154,6 +154,14 @@ type FillPlanAction = {
   confidence?: number;
 };
 
+type NotificationSummary = {
+  id: string;
+  kind: "community" | "report" | "system";
+  message: string;
+  createdAt: string;
+  href?: string;
+};
+
 function trimString(val: unknown): string {
   if (typeof val === "string") return val.trim();
   if (typeof val === "number") return String(val);
@@ -404,7 +412,11 @@ async function callChatCompletion(params: {
   maxTokens?: number;
 }) {
   if (params.provider === "GEMINI") {
-    return callGeminiCompletion(params);
+    const geminiParams: Parameters<typeof callGeminiCompletion>[0] = {
+      ...params,
+      provider: "GEMINI",
+    };
+    return callGeminiCompletion(geminiParams);
   }
   const messages = [];
   if (params.systemPrompt?.trim()) {
@@ -2557,7 +2569,7 @@ async function bootstrap() {
       limit: 50,
     });
 
-    const notifications = [];
+    const notifications: NotificationSummary[] = [];
 
     communityItems.forEach((item) => {
       const senderName = item.senderName?.trim() || "Someone";

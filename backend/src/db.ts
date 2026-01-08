@@ -2030,7 +2030,7 @@ export async function deleteCommunityChannel(id: string): Promise<boolean> {
     `,
     [id],
   );
-  return result.rowCount > 0;
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function listCommunityDmThreads(userId: string): Promise<CommunityThreadSummary[]> {
