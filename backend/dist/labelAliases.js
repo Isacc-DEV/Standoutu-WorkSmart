@@ -1,9 +1,40 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CANONICAL_LABEL_KEYS = exports.DEFAULT_LABEL_ALIASES = void 0;
+exports.CANONICAL_LABEL_KEYS = exports.DEFAULT_LABEL_ALIASES = exports.APPLICATION_SUCCESS_DEFAULTS = exports.APPLICATION_SUCCESS_KEY = void 0;
 exports.normalizeLabelAlias = normalizeLabelAlias;
 exports.buildAliasIndex = buildAliasIndex;
 exports.matchLabelToCanonical = matchLabelToCanonical;
+exports.buildApplicationSuccessPhrases = buildApplicationSuccessPhrases;
+exports.APPLICATION_SUCCESS_KEY = 'application_success';
+exports.APPLICATION_SUCCESS_DEFAULTS = [
+    'application submitted',
+    'application received',
+    'application sent',
+    'your application has been submitted',
+    'your application was submitted',
+    'we received your application',
+    'applied',
+    'applied successfully',
+    'already applied',
+    'you have applied',
+    'submitted',
+    'submission complete',
+    'submission successful',
+    'thank you for applying',
+    'thanks for applying',
+    'thank you for your application',
+    'thank you for submitting',
+    'we appreciate your interest',
+    'thanks for your interest',
+    'your interest has been received',
+    'application confirmation',
+    'submission confirmation',
+    'proposal confirmation',
+    "you're all set",
+    'all done',
+    'next steps',
+    'what happens next',
+];
 exports.DEFAULT_LABEL_ALIASES = {
     // ===== Personal identity =====
     full_name: [
@@ -94,6 +125,8 @@ exports.DEFAULT_LABEL_ALIASES = {
     eeo_race_ethnicity: ['race', 'ethnicity', 'race/ethnicity'],
     eeo_veteran: ['veteran', 'protected veteran'],
     eeo_disability: ['disability', 'disability status'],
+    // ===== Application success phrases =====
+    [exports.APPLICATION_SUCCESS_KEY]: [],
 };
 exports.CANONICAL_LABEL_KEYS = new Set(Object.keys(exports.DEFAULT_LABEL_ALIASES));
 function normalizeLabelAlias(label) {
@@ -115,10 +148,16 @@ function buildAliasIndex(customAliases = []) {
             index.set(squished, canonical);
     };
     for (const [canonical, aliases] of Object.entries(exports.DEFAULT_LABEL_ALIASES)) {
+        if (canonical === exports.APPLICATION_SUCCESS_KEY)
+            continue;
         add(canonical, canonical);
         aliases.forEach((alias) => add(canonical, alias));
     }
-    customAliases.forEach((alias) => add(alias.canonicalKey, alias.alias));
+    customAliases.forEach((alias) => {
+        if (alias.canonicalKey === exports.APPLICATION_SUCCESS_KEY)
+            return;
+        add(alias.canonicalKey, alias.alias);
+    });
     return index;
 }
 function matchLabelToCanonical(label, aliasIndex) {
@@ -129,4 +168,17 @@ function matchLabelToCanonical(label, aliasIndex) {
         return undefined;
     const squished = normalized.replace(/\s+/g, '');
     return aliasIndex.get(normalized) ?? aliasIndex.get(squished);
+}
+function buildApplicationSuccessPhrases(customAliases = []) {
+    const defaults = exports.DEFAULT_LABEL_ALIASES[exports.APPLICATION_SUCCESS_KEY] ?? [];
+    const custom = customAliases
+        .filter((alias) => alias.canonicalKey === exports.APPLICATION_SUCCESS_KEY)
+        .map((alias) => alias.alias);
+    const merged = new Set();
+    for (const phrase of [...defaults, ...custom]) {
+        const trimmed = phrase.trim();
+        if (trimmed)
+            merged.add(trimmed);
+    }
+    return Array.from(merged);
 }

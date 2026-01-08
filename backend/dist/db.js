@@ -4,8 +4,12 @@ exports.pool = void 0;
 exports.initDb = initDb;
 exports.findUserByEmail = findUserByEmail;
 exports.findUserById = findUserById;
+exports.listActiveUserIds = listActiveUserIds;
+exports.listActiveUserIdsByRole = listActiveUserIdsByRole;
 exports.insertUser = insertUser;
+exports.updateUserAvatar = updateUserAvatar;
 exports.insertProfile = insertProfile;
+exports.insertApplication = insertApplication;
 exports.listProfiles = listProfiles;
 exports.listProfilesForBidder = listProfilesForBidder;
 exports.findProfileById = findProfileById;
@@ -13,44 +17,213 @@ exports.listProfileAccountsForUser = listProfileAccountsForUser;
 exports.findProfileAccountById = findProfileAccountById;
 exports.upsertProfileAccount = upsertProfileAccount;
 exports.touchProfileAccount = touchProfileAccount;
+exports.listCalendarEventsForOwner = listCalendarEventsForOwner;
+exports.replaceCalendarEvents = replaceCalendarEvents;
+exports.listDailyReportsForUser = listDailyReportsForUser;
+exports.countDailyReportsInReview = countDailyReportsInReview;
+exports.countReviewedDailyReportsForUser = countReviewedDailyReportsForUser;
+exports.insertNotifications = insertNotifications;
+exports.listNotificationsForUser = listNotificationsForUser;
+exports.markNotificationsRead = markNotificationsRead;
+exports.countUnreadNotifications = countUnreadNotifications;
+exports.listReviewedDailyReportsForUser = listReviewedDailyReportsForUser;
+exports.listInReviewReportsWithUsers = listInReviewReportsWithUsers;
+exports.listUnreadCommunityNotifications = listUnreadCommunityNotifications;
+exports.listInReviewReports = listInReviewReports;
+exports.listAcceptedCountsByDate = listAcceptedCountsByDate;
+exports.listDailyReportsByDate = listDailyReportsByDate;
+exports.listDailyReportAttachments = listDailyReportAttachments;
+exports.insertDailyReportAttachments = insertDailyReportAttachments;
+exports.findDailyReportByUserAndDate = findDailyReportByUserAndDate;
+exports.findDailyReportById = findDailyReportById;
+exports.upsertDailyReport = upsertDailyReport;
+exports.updateDailyReportStatus = updateDailyReportStatus;
 exports.updateProfileRecord = updateProfileRecord;
-exports.insertResumeRecord = insertResumeRecord;
-exports.deleteResumeById = deleteResumeById;
-exports.listResumesByProfile = listResumesByProfile;
-exports.findResumeById = findResumeById;
+exports.listResumeTemplates = listResumeTemplates;
+exports.findResumeTemplateById = findResumeTemplateById;
+exports.insertResumeTemplate = insertResumeTemplate;
+exports.updateResumeTemplate = updateResumeTemplate;
+exports.deleteResumeTemplate = deleteResumeTemplate;
 exports.listAssignments = listAssignments;
 exports.findActiveAssignmentByProfile = findActiveAssignmentByProfile;
 exports.insertAssignmentRecord = insertAssignmentRecord;
 exports.closeAssignmentById = closeAssignmentById;
 exports.listBidderSummaries = listBidderSummaries;
+exports.listApplications = listApplications;
 exports.listLabelAliases = listLabelAliases;
 exports.findLabelAliasById = findLabelAliasById;
 exports.findLabelAliasByNormalized = findLabelAliasByNormalized;
 exports.insertLabelAlias = insertLabelAlias;
 exports.updateLabelAliasRecord = updateLabelAliasRecord;
 exports.deleteLabelAlias = deleteLabelAlias;
+exports.listCommunityChannels = listCommunityChannels;
+exports.updateCommunityChannel = updateCommunityChannel;
+exports.deleteCommunityChannel = deleteCommunityChannel;
+exports.listCommunityDmThreads = listCommunityDmThreads;
+exports.findCommunityChannelByKey = findCommunityChannelByKey;
+exports.findCommunityThreadById = findCommunityThreadById;
+exports.isCommunityThreadMember = isCommunityThreadMember;
+exports.insertCommunityThread = insertCommunityThread;
+exports.insertCommunityThreadMember = insertCommunityThreadMember;
+exports.findCommunityDmThreadId = findCommunityDmThreadId;
+exports.getCommunityDmThreadSummary = getCommunityDmThreadSummary;
+exports.listCommunityMessages = listCommunityMessages;
+exports.listCommunityThreadMemberIds = listCommunityThreadMemberIds;
+exports.insertCommunityMessage = insertCommunityMessage;
+exports.insertMessageAttachment = insertMessageAttachment;
+exports.listMessageAttachments = listMessageAttachments;
+exports.addMessageReaction = addMessageReaction;
+exports.removeMessageReaction = removeMessageReaction;
+exports.listMessageReactions = listMessageReactions;
+exports.getUnreadInfo = getUnreadInfo;
+exports.markThreadAsRead = markThreadAsRead;
+exports.incrementUnreadCount = incrementUnreadCount;
+exports.listCommunityMessagesWithPagination = listCommunityMessagesWithPagination;
+exports.getMessageById = getMessageById;
+exports.editMessage = editMessage;
+exports.deleteMessage = deleteMessage;
+exports.pinMessage = pinMessage;
+exports.unpinMessage = unpinMessage;
+exports.listPinnedMessages = listPinnedMessages;
+exports.updateUserPresence = updateUserPresence;
+exports.getUserPresence = getUserPresence;
+exports.listUserPresences = listUserPresences;
+exports.addMessageReadReceipt = addMessageReadReceipt;
+exports.getMessageReadReceipts = getMessageReadReceipts;
+exports.bulkAddReadReceipts = bulkAddReadReceipts;
+const crypto_1 = require("crypto");
 const pg_1 = require("pg");
+const labelAliases_1 = require("./labelAliases");
+const config_1 = require("./config");
+const DEFAULT_ADMIN_DATABASE = 'postgres';
+function getDatabaseName(connectionString) {
+    try {
+        const url = new URL(connectionString);
+        const pathname = url.pathname.replace(/^\/+/, '');
+        if (!pathname)
+            return null;
+        return decodeURIComponent(pathname);
+    }
+    catch {
+        return null;
+    }
+}
+function buildAdminConnectionString(connectionString, adminDatabase) {
+    try {
+        const url = new URL(connectionString);
+        url.pathname = `/${adminDatabase}`;
+        return url.toString();
+    }
+    catch {
+        return null;
+    }
+}
+function quoteIdentifier(identifier) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier))
+        return identifier;
+    return `"${identifier.replace(/"/g, '""')}"`;
+}
+async function ensureDatabaseExists(connectionString) {
+    const databaseName = getDatabaseName(connectionString);
+    if (!databaseName)
+        return;
+    if (databaseName === DEFAULT_ADMIN_DATABASE || databaseName === 'template1')
+        return;
+    const adminConnectionString = buildAdminConnectionString(connectionString, DEFAULT_ADMIN_DATABASE);
+    if (!adminConnectionString)
+        return;
+    const adminPool = new pg_1.Pool({ connectionString: adminConnectionString });
+    try {
+        const { rows } = await adminPool.query('SELECT 1 AS exists FROM pg_database WHERE datname = $1', [databaseName]);
+        if (rows.length > 0)
+            return;
+        const dbName = quoteIdentifier(databaseName);
+        try {
+            await adminPool.query(`CREATE DATABASE ${dbName}`);
+        }
+        catch (err) {
+            const code = err?.code;
+            if (code !== '42P04') {
+                throw err;
+            }
+        }
+    }
+    finally {
+        await adminPool.end();
+    }
+}
 exports.pool = new pg_1.Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: config_1.config.DATABASE_URL,
 });
 async function initDb() {
-    const client = await exports.pool.connect();
+    let client;
+    try {
+        client = await exports.pool.connect();
+    }
+    catch (err) {
+        const code = err?.code;
+        if (code !== '3D000') {
+            throw err;
+        }
+        await ensureDatabaseExists(config_1.config.DATABASE_URL);
+        client = await exports.pool.connect();
+    }
     try {
         await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
+        avatar_url TEXT,
         role TEXT NOT NULL,
         password TEXT NOT NULL,
         is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS "User" (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        email TEXT,
+        "emailVerified" TIMESTAMP(3),
+        image TEXT,
+        avatar_url TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS "Account" (
+        id TEXT PRIMARY KEY,
+        "userId" TEXT NOT NULL,
+        type TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        "providerAccountId" TEXT NOT NULL,
+        refresh_token TEXT,
+        access_token TEXT,
+        expires_at INTEGER,
+        ext_expires_in INTEGER,
+        token_type TEXT,
+        scope TEXT,
+        id_token TEXT,
+        session_state TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS "Session" (
+        id TEXT PRIMARY KEY,
+        "sessionToken" TEXT NOT NULL,
+        "userId" TEXT NOT NULL,
+        expires TIMESTAMP(3) NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS "VerificationToken" (
+        identifier TEXT NOT NULL,
+        token TEXT NOT NULL,
+        expires TIMESTAMP(3) NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS profiles (
         id UUID PRIMARY KEY,
         display_name TEXT NOT NULL,
         base_info JSONB DEFAULT '{}'::jsonb,
+        base_resume JSONB DEFAULT '{}'::jsonb,
         created_by UUID,
         assigned_bidder_id UUID REFERENCES users(id),
         assigned_by UUID REFERENCES users(id),
@@ -59,15 +232,14 @@ async function initDb() {
         updated_at TIMESTAMP DEFAULT NOW()
       );
 
-      CREATE TABLE IF NOT EXISTS resumes (
+      CREATE TABLE IF NOT EXISTS resume_templates (
         id UUID PRIMARY KEY,
-        profile_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
-        label TEXT NOT NULL,
-        file_path TEXT,
-        resume_text TEXT,
-        resume_description TEXT,
-        resume_json JSONB,
-        created_at TIMESTAMP DEFAULT NOW()
+        name TEXT NOT NULL,
+        description TEXT,
+        html TEXT NOT NULL,
+        created_by UUID REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
       );
 
       CREATE TABLE IF NOT EXISTS sessions (
@@ -84,6 +256,17 @@ async function initDb() {
         fill_plan JSONB,
         started_at TIMESTAMP,
         ended_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS applications (
+        id UUID PRIMARY KEY,
+        session_id UUID UNIQUE,
+        bidder_user_id UUID,
+        profile_id UUID,
+        resume_id UUID,
+        url TEXT,
+        domain TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
       );
 
       CREATE TABLE IF NOT EXISTS events (
@@ -128,15 +311,222 @@ async function initDb() {
         UNIQUE (profile_id, email)
       );
 
+      CREATE TABLE IF NOT EXISTS community_threads (
+        id UUID PRIMARY KEY,
+        thread_type TEXT NOT NULL,
+        name TEXT,
+        name_key TEXT UNIQUE,
+        description TEXT,
+        created_by UUID REFERENCES users(id),
+        is_private BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        last_message_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS community_thread_members (
+        id UUID PRIMARY KEY,
+        thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT DEFAULT 'MEMBER',
+        permissions JSONB DEFAULT '{}'::jsonb,
+        joined_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (thread_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_messages (
+        id UUID PRIMARY KEY,
+        thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        sender_id UUID REFERENCES users(id),
+        body TEXT NOT NULL,
+        reply_to_message_id UUID REFERENCES community_messages(id),
+        is_edited BOOLEAN DEFAULT FALSE,
+        edited_at TIMESTAMP,
+        is_deleted BOOLEAN DEFAULT FALSE,
+        deleted_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS seed_flags (
+        key TEXT PRIMARY KEY,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS community_message_attachments (
+        id UUID PRIMARY KEY,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        file_name TEXT NOT NULL,
+        file_url TEXT NOT NULL,
+        file_size BIGINT NOT NULL,
+        mime_type TEXT NOT NULL,
+        thumbnail_url TEXT,
+        width INTEGER,
+        height INTEGER,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS community_message_reactions (
+        id UUID PRIMARY KEY,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        emoji TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (message_id, user_id, emoji)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_unread_messages (
+        id UUID PRIMARY KEY,
+        thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        last_read_message_id UUID REFERENCES community_messages(id),
+        unread_count INTEGER DEFAULT 0,
+        last_read_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (thread_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_channel_roles (
+        id UUID PRIMARY KEY,
+        channel_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        role_name TEXT NOT NULL,
+        permissions JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (channel_id, role_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_pinned_messages (
+        id UUID PRIMARY KEY,
+        thread_id UUID REFERENCES community_threads(id) ON DELETE CASCADE,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        pinned_by UUID REFERENCES users(id),
+        pinned_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (thread_id, message_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS community_user_presence (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        status TEXT DEFAULT 'offline',
+        last_seen_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS community_message_read_receipts (
+        id UUID PRIMARY KEY,
+        message_id UUID REFERENCES community_messages(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        read_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (message_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        message TEXT NOT NULL,
+        href TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        read_at TIMESTAMP
+      );
+
+      ALTER TABLE IF EXISTS users
+        ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+      ALTER TABLE IF EXISTS "User"
+        ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+      -- Backfill new community message columns before creating indexes.
+      ALTER TABLE IF EXISTS community_messages
+        ADD COLUMN IF NOT EXISTS reply_to_message_id UUID REFERENCES community_messages(id);
+      ALTER TABLE IF EXISTS community_messages
+        ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT FALSE;
+      ALTER TABLE IF EXISTS community_messages
+        ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP;
+      ALTER TABLE IF EXISTS community_messages
+        ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
+      ALTER TABLE IF EXISTS community_messages
+        ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
+      ALTER TABLE IF EXISTS community_messages
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+
       CREATE INDEX IF NOT EXISTS idx_profile_accounts_profile ON profile_accounts(profile_id);
+      CREATE INDEX IF NOT EXISTS idx_applications_bidder ON applications(bidder_user_id);
+      CREATE INDEX IF NOT EXISTS idx_applications_profile ON applications(profile_id);
+      CREATE INDEX IF NOT EXISTS idx_resume_templates_updated ON resume_templates(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_resume_templates_name ON resume_templates(name);
+      CREATE INDEX IF NOT EXISTS idx_community_members_thread ON community_thread_members(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_community_members_user ON community_thread_members(user_id);
+      CREATE INDEX IF NOT EXISTS idx_community_messages_thread ON community_messages(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_attachments_message ON community_message_attachments(message_id);
+      CREATE INDEX IF NOT EXISTS idx_reactions_message ON community_message_reactions(message_id);
+      CREATE INDEX IF NOT EXISTS idx_reactions_user ON community_message_reactions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_unread_user ON community_unread_messages(user_id);
+      CREATE INDEX IF NOT EXISTS idx_unread_thread ON community_unread_messages(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_pinned_thread ON community_pinned_messages(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_read_receipts_message ON community_message_read_receipts(message_id);
+      CREATE INDEX IF NOT EXISTS idx_read_receipts_user ON community_message_read_receipts(user_id);
+      CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id) WHERE read_at IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"(email);
+      CREATE UNIQUE INDEX IF NOT EXISTS "Account_provider_providerAccountId_key" ON "Account"(provider, "providerAccountId");
+      CREATE UNIQUE INDEX IF NOT EXISTS "Session_sessionToken_key" ON "Session"("sessionToken");
+      CREATE UNIQUE INDEX IF NOT EXISTS "VerificationToken_token_key" ON "VerificationToken"(token);
+      CREATE UNIQUE INDEX IF NOT EXISTS "VerificationToken_identifier_token_key" ON "VerificationToken"(identifier, token);
+
+      CREATE TABLE IF NOT EXISTS calendar_events (
+        id UUID PRIMARY KEY,
+        owner_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        mailbox TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'MICROSOFT',
+        provider_event_id TEXT NOT NULL,
+        title TEXT,
+        start_at TEXT NOT NULL,
+        end_at TEXT NOT NULL,
+        is_all_day BOOLEAN DEFAULT FALSE,
+        organizer TEXT,
+        location TEXT,
+        timezone TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (owner_user_id, provider_event_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_mailbox ON calendar_events(owner_user_id, mailbox);
+      CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_start ON calendar_events(owner_user_id, start_at);
+
+      CREATE TABLE IF NOT EXISTS daily_reports (
+        id UUID PRIMARY KEY,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        report_date DATE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        content TEXT,
+        review_reason TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        submitted_at TIMESTAMP,
+        reviewed_at TIMESTAMP,
+        reviewed_by UUID REFERENCES users(id),
+        UNIQUE (user_id, report_date)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_daily_reports_user_status ON daily_reports(user_id, status);
+      CREATE INDEX IF NOT EXISTS idx_daily_reports_report_date ON daily_reports(report_date);
+
+      CREATE TABLE IF NOT EXISTS daily_report_attachments (
+        id UUID PRIMARY KEY,
+        report_id UUID REFERENCES daily_reports(id) ON DELETE CASCADE,
+        file_url TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_size BIGINT NOT NULL,
+        mime_type TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (report_id, file_url)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_daily_report_attachments_report ON daily_report_attachments(report_id);
 
       -- Backfill schema changes at startup to avoid missing migration runs.
-      ALTER TABLE IF EXISTS resumes
-        DROP COLUMN IF EXISTS resume_json;
+      DROP TABLE IF EXISTS resumes;
 
-      ALTER TABLE IF EXISTS resumes
-        ADD COLUMN IF NOT EXISTS resume_description TEXT;
-
+      ALTER TABLE IF EXISTS profiles
+        ADD COLUMN IF NOT EXISTS base_resume JSONB DEFAULT '{}'::jsonb;
       ALTER TABLE IF EXISTS profiles
         ADD COLUMN IF NOT EXISTS assigned_bidder_id UUID REFERENCES users(id);
       ALTER TABLE IF EXISTS profiles
@@ -146,6 +536,78 @@ async function initDb() {
 
       DROP TABLE IF EXISTS assignments;
     `);
+        await client.query("ALTER TABLE IF EXISTS daily_reports ADD COLUMN IF NOT EXISTS review_reason TEXT;");
+        await client.query('CREATE INDEX IF NOT EXISTS idx_community_messages_reply ON community_messages(reply_to_message_id);');
+        await client.query(`
+        UPDATE daily_reports SET status = 'in_review' WHERE status = 'sent';
+        UPDATE daily_reports SET status = 'accepted' WHERE status = 'accept';
+        UPDATE daily_reports SET status = 'rejected' WHERE status = 'failed';
+      `);
+        const seedKey = 'application_phrases_seed';
+        const { rows: seedRows } = await client.query('SELECT key FROM seed_flags WHERE key = $1', [seedKey]);
+        if (seedRows.length === 0) {
+            const { rows: existing } = await client.query('SELECT id FROM label_aliases WHERE canonical_key = $1 LIMIT 1', [labelAliases_1.APPLICATION_SUCCESS_KEY]);
+            if (existing.length === 0) {
+                for (const phrase of labelAliases_1.APPLICATION_SUCCESS_DEFAULTS) {
+                    const normalized = (0, labelAliases_1.normalizeLabelAlias)(phrase);
+                    if (!normalized)
+                        continue;
+                    await client.query(`
+              INSERT INTO label_aliases (id, canonical_key, alias, normalized_alias)
+              VALUES ($1, $2, $3, $4)
+              ON CONFLICT (normalized_alias) DO NOTHING
+            `, [(0, crypto_1.randomUUID)(), labelAliases_1.APPLICATION_SUCCESS_KEY, phrase, normalized]);
+                }
+            }
+            await client.query('INSERT INTO seed_flags (key) VALUES ($1)', [seedKey]);
+        }
+        const communitySeedKey = 'community_default_channels_seed';
+        const { rows: communitySeedRows } = await client.query('SELECT key FROM seed_flags WHERE key = $1', [communitySeedKey]);
+        if (communitySeedRows.length === 0) {
+            const defaults = [
+                {
+                    name: 'general',
+                    description: 'Company-wide discussions and daily updates.',
+                },
+                {
+                    name: 'announcements',
+                    description: 'Important notices from the team.',
+                },
+                {
+                    name: 'sandbox',
+                    description: 'Play area to try things out.',
+                },
+            ];
+            for (const channel of defaults) {
+                const key = channel.name.trim().toLowerCase();
+                if (!key)
+                    continue;
+                await client.query(`
+            INSERT INTO community_threads (id, thread_type, name, name_key, description, created_by, is_private)
+            VALUES ($1, 'CHANNEL', $2, $3, $4, NULL, FALSE)
+            ON CONFLICT (name_key) DO NOTHING
+          `, [(0, crypto_1.randomUUID)(), channel.name.trim(), key, channel.description ?? null]);
+            }
+            await client.query('INSERT INTO seed_flags (key) VALUES ($1)', [communitySeedKey]);
+        }
+        const adminSeedKey = 'default_admin_seed';
+        const { rows: adminSeedRows } = await client.query('SELECT key FROM seed_flags WHERE key = $1', [adminSeedKey]);
+        if (adminSeedRows.length === 0) {
+            await client.query(`
+          INSERT INTO users (id, email, name, role, password, is_active, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (email) DO NOTHING
+        `, [
+                'b288230a-590d-4030-85d4-c72dfe7f5ae6',
+                'wrenikey.dev@gmail.com',
+                'Isacc Wang',
+                'ADMIN',
+                '$2a$08$TgVEMWkdL0OQnqpAbXGoJe/sUpU9iRaTNvKBN25pJAr2TWQoZ4yC2',
+                true,
+                '2025-12-12 00:52:11.345273',
+            ]);
+            await client.query('INSERT INTO seed_flags (key) VALUES ($1)', [adminSeedKey]);
+        }
         // No seed data inserted; database starts empty.
     }
     finally {
@@ -153,32 +615,89 @@ async function initDb() {
     }
 }
 async function findUserByEmail(email) {
-    const { rows } = await exports.pool.query('SELECT id, email, name, role, is_active as "isActive", password FROM users WHERE email = $1', [email]);
+    const { rows } = await exports.pool.query('SELECT id, email, name, avatar_url AS "avatarUrl", role, is_active as "isActive", password FROM users WHERE email = $1', [email]);
     return rows[0];
 }
 async function findUserById(id) {
-    const { rows } = await exports.pool.query('SELECT id, email, name, role, is_active as "isActive", password FROM users WHERE id = $1', [id]);
+    const { rows } = await exports.pool.query('SELECT id, email, name, avatar_url AS "avatarUrl", role, is_active as "isActive", password FROM users WHERE id = $1', [id]);
     return rows[0];
 }
+async function listActiveUserIds() {
+    const { rows } = await exports.pool.query('SELECT id FROM users WHERE is_active = TRUE');
+    return rows.map((row) => row.id);
+}
+async function listActiveUserIdsByRole(roles) {
+    if (!roles.length)
+        return [];
+    const { rows } = await exports.pool.query('SELECT id FROM users WHERE is_active = TRUE AND role = ANY($1)', [roles]);
+    return rows.map((row) => row.id);
+}
 async function insertUser(user) {
+    const avatarUrl = user.avatarUrl && user.avatarUrl.toLowerCase() !== 'nope' ? user.avatarUrl : null;
     await exports.pool.query(`
-      INSERT INTO users (id, email, name, role, password, is_active)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, role = EXCLUDED.role, password = EXCLUDED.password, is_active = EXCLUDED.is_active
-    `, [user.id, user.email, user.name, user.role, user.password ?? 'demo', user.isActive ?? true]);
+      INSERT INTO users (id, email, name, avatar_url, role, password, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (email) DO UPDATE SET
+        name = EXCLUDED.name,
+        avatar_url = EXCLUDED.avatar_url,
+        role = EXCLUDED.role,
+        password = EXCLUDED.password,
+        is_active = EXCLUDED.is_active
+    `, [
+        user.id,
+        user.email,
+        user.name,
+        avatarUrl,
+        user.role,
+        user.password ?? 'demo',
+        user.isActive ?? true,
+    ]);
+}
+async function updateUserAvatar(userId, avatarUrl) {
+    const normalized = avatarUrl && avatarUrl.toLowerCase() !== 'nope' ? avatarUrl : null;
+    await exports.pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [
+        normalized,
+        userId,
+    ]);
 }
 async function insertProfile(profile) {
     await exports.pool.query(`
-      INSERT INTO profiles (id, display_name, base_info, created_by, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO profiles (id, display_name, base_info, base_resume, created_by, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (id) DO NOTHING
     `, [
         profile.id,
         profile.displayName,
         JSON.stringify(profile.baseInfo ?? {}),
+        JSON.stringify(profile.baseResume ?? {}),
         profile.createdBy ?? null,
         profile.createdAt ?? new Date().toISOString(),
         profile.updatedAt ?? new Date().toISOString(),
+    ]);
+}
+async function insertApplication(record) {
+    await exports.pool.query(`
+      INSERT INTO applications (
+        id,
+        session_id,
+        bidder_user_id,
+        profile_id,
+        resume_id,
+        url,
+        domain,
+        created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (session_id) DO NOTHING
+    `, [
+        record.id,
+        record.sessionId,
+        record.bidderUserId,
+        record.profileId,
+        record.resumeId ?? null,
+        record.url,
+        record.domain ?? null,
+        record.createdAt,
     ]);
 }
 async function listProfiles() {
@@ -187,6 +706,7 @@ async function listProfiles() {
         id,
         display_name AS "displayName",
         base_info AS "baseInfo",
+        base_resume AS "baseResume",
         created_by AS "createdBy",
         assigned_bidder_id AS "assignedBidderId",
         assigned_by AS "assignedBy",
@@ -204,6 +724,7 @@ async function listProfilesForBidder(bidderUserId) {
         id,
         display_name AS "displayName",
         base_info AS "baseInfo",
+        base_resume AS "baseResume",
         created_by AS "createdBy",
         assigned_bidder_id AS "assignedBidderId",
         assigned_by AS "assignedBy",
@@ -222,6 +743,7 @@ async function findProfileById(id) {
         id,
         display_name AS "displayName",
         base_info AS "baseInfo",
+        base_resume AS "baseResume",
         created_by AS "createdBy",
         assigned_bidder_id AS "assignedBidderId",
         assigned_by AS "assignedBy",
@@ -321,40 +843,587 @@ async function touchProfileAccount(id, lastSyncAt) {
       WHERE id = $1
     `, [id, lastSyncAt ?? new Date().toISOString()]);
 }
+async function listCalendarEventsForOwner(ownerUserId, mailboxes, range) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        provider_event_id AS id,
+        mailbox,
+        title,
+        start_at AS "start",
+        end_at AS "end",
+        is_all_day AS "isAllDay",
+        organizer,
+        location
+      FROM calendar_events
+      WHERE owner_user_id = $1
+        AND ($2::text[] IS NULL OR mailbox = ANY($2))
+        AND ($3::text IS NULL OR end_at >= $3)
+        AND ($4::text IS NULL OR start_at <= $4)
+      ORDER BY start_at ASC
+    `, [
+        ownerUserId,
+        mailboxes && mailboxes.length ? mailboxes : null,
+        range?.start ?? null,
+        range?.end ?? null,
+    ]);
+    return rows;
+}
+async function replaceCalendarEvents(params) {
+    const { ownerUserId, mailboxes, timezone, events } = params;
+    const client = await exports.pool.connect();
+    try {
+        await client.query('BEGIN');
+        if (mailboxes.length) {
+            await client.query('DELETE FROM calendar_events WHERE owner_user_id = $1 AND mailbox = ANY($2)', [ownerUserId, mailboxes]);
+        }
+        if (events.length) {
+            const values = [];
+            const args = [];
+            let idx = 1;
+            for (const event of events) {
+                if (!event.mailbox)
+                    continue;
+                values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+                args.push((0, crypto_1.randomUUID)(), ownerUserId, event.mailbox, 'MICROSOFT', event.id, event.title ?? null, event.start, event.end, event.isAllDay ?? false, event.organizer ?? null, event.location ?? null, timezone ?? null);
+            }
+            if (values.length) {
+                await client.query(`
+            INSERT INTO calendar_events (
+              id,
+              owner_user_id,
+              mailbox,
+              provider,
+              provider_event_id,
+              title,
+              start_at,
+              end_at,
+              is_all_day,
+              organizer,
+              location,
+              timezone
+            )
+            VALUES ${values.join(', ')}
+          `, args);
+            }
+        }
+        await client.query('COMMIT');
+    }
+    catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    }
+    finally {
+        client.release();
+    }
+    return listCalendarEventsForOwner(ownerUserId, mailboxes);
+}
+async function listDailyReportsForUser(userId, range = {}) {
+    const params = [userId];
+    let query = `
+    SELECT
+      id,
+      user_id AS "userId",
+      report_date::text AS "reportDate",
+      status,
+      content,
+      review_reason AS "reviewReason",
+      created_at AS "createdAt",
+      updated_at AS "updatedAt",
+      submitted_at AS "submittedAt",
+      reviewed_at AS "reviewedAt",
+      reviewed_by AS "reviewedBy"
+    FROM daily_reports
+    WHERE user_id = $1
+  `;
+    if (range.start) {
+        params.push(range.start);
+        query += ` AND report_date >= $${params.length}`;
+    }
+    if (range.end) {
+        params.push(range.end);
+        query += ` AND report_date <= $${params.length}`;
+    }
+    query += ' ORDER BY report_date ASC';
+    const { rows } = await exports.pool.query(query, params);
+    return rows;
+}
+async function countDailyReportsInReview(since) {
+    const params = [];
+    let query = `
+    SELECT COUNT(*)::int AS count
+    FROM daily_reports
+    WHERE status = 'in_review'
+  `;
+    if (since) {
+        params.push(since);
+        query += ` AND submitted_at IS NOT NULL AND submitted_at >= $1`;
+    }
+    const { rows } = await exports.pool.query(query, params);
+    return rows[0]?.count ?? 0;
+}
+async function countReviewedDailyReportsForUser(userId, since) {
+    const params = [userId];
+    let query = `
+    SELECT COUNT(*)::int AS count
+    FROM daily_reports
+    WHERE user_id = $1
+      AND status IN ('accepted', 'rejected')
+      AND reviewed_at IS NOT NULL
+  `;
+    if (since) {
+        params.push(since);
+        query += ` AND reviewed_at > $${params.length}`;
+    }
+    const { rows } = await exports.pool.query(query, params);
+    return rows[0]?.count ?? 0;
+}
+async function insertNotifications(entries) {
+    if (!entries.length)
+        return;
+    const values = [];
+    const params = [];
+    let idx = 1;
+    entries.forEach((entry) => {
+        values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+        params.push((0, crypto_1.randomUUID)(), entry.userId, entry.kind, entry.message, entry.href ?? null, entry.createdAt ?? new Date().toISOString());
+    });
+    await exports.pool.query(`
+      INSERT INTO notifications (id, user_id, kind, message, href, created_at)
+      VALUES ${values.join(', ')}
+    `, params);
+}
+async function listNotificationsForUser(userId, options = {}) {
+    const params = [userId];
+    let query = `
+    SELECT
+      id,
+      user_id AS "userId",
+      kind,
+      message,
+      href,
+      created_at AS "createdAt",
+      read_at AS "readAt"
+    FROM notifications
+    WHERE user_id = $1
+  `;
+    if (options.unreadOnly) {
+        query += ' AND read_at IS NULL';
+    }
+    query += ' ORDER BY created_at DESC';
+    if (options.limit) {
+        params.push(options.limit);
+        query += ` LIMIT $${params.length}`;
+    }
+    const { rows } = await exports.pool.query(query, params);
+    return rows;
+}
+async function markNotificationsRead(userId, ids) {
+    if (ids && ids.length > 0) {
+        await exports.pool.query(`
+        UPDATE notifications
+        SET read_at = NOW()
+        WHERE user_id = $1 AND id = ANY($2) AND read_at IS NULL
+      `, [userId, ids]);
+        return;
+    }
+    await exports.pool.query(`
+      UPDATE notifications
+      SET read_at = NOW()
+      WHERE user_id = $1 AND read_at IS NULL
+    `, [userId]);
+}
+async function countUnreadNotifications(userId) {
+    const { rows } = await exports.pool.query(`
+      SELECT COUNT(*)::int AS count
+      FROM notifications
+      WHERE user_id = $1 AND read_at IS NULL
+    `, [userId]);
+    return rows[0]?.count ?? 0;
+}
+async function listReviewedDailyReportsForUser(userId, since) {
+    const params = [userId];
+    let query = `
+    SELECT
+      id,
+      report_date::text AS "reportDate",
+      status,
+      reviewed_at AS "reviewedAt"
+    FROM daily_reports
+    WHERE user_id = $1
+      AND status IN ('accepted', 'rejected')
+      AND reviewed_at IS NOT NULL
+  `;
+    if (since) {
+        params.push(since);
+        query += ` AND reviewed_at > $${params.length}`;
+    }
+    query += ' ORDER BY reviewed_at DESC';
+    const { rows } = await exports.pool.query(query, params);
+    return rows;
+}
+async function listInReviewReportsWithUsers() {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        r.id,
+        r.report_date::text AS "reportDate",
+        r.submitted_at AS "submittedAt",
+        r.updated_at AS "updatedAt",
+        u.name AS "userName"
+      FROM daily_reports r
+      JOIN users u ON u.id = r.user_id
+      WHERE r.status = 'in_review'
+      ORDER BY r.submitted_at DESC NULLS LAST, r.updated_at DESC
+    `);
+    return rows;
+}
+async function listUnreadCommunityNotifications(userId) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        u.thread_id AS "threadId",
+        t.thread_type AS "threadType",
+        t.name AS "threadName",
+        u.unread_count AS "unreadCount",
+        m.id AS "messageId",
+        m.body AS "messageBody",
+        m.created_at AS "messageCreatedAt",
+        sender.name AS "senderName"
+      FROM community_unread_messages u
+      JOIN community_threads t ON t.id = u.thread_id
+      LEFT JOIN LATERAL (
+        SELECT id, body, created_at, sender_id
+        FROM community_messages
+        WHERE thread_id = u.thread_id AND created_at > u.last_read_at
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) m ON TRUE
+      LEFT JOIN users sender ON sender.id = m.sender_id
+      WHERE u.user_id = $1 AND u.unread_count > 0
+      ORDER BY COALESCE(m.created_at, u.updated_at) DESC
+    `, [userId]);
+    return rows;
+}
+async function listInReviewReports(range) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        updated_at AS "updatedAt"
+      FROM daily_reports
+      WHERE status = 'in_review'
+        AND report_date BETWEEN $1 AND $2
+      ORDER BY report_date ASC, updated_at DESC
+    `, [range.start, range.end]);
+    return rows;
+}
+async function listAcceptedCountsByDate(range) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        report_date::text AS "reportDate",
+        COUNT(*)::int AS count
+      FROM daily_reports
+      WHERE status = 'accepted'
+        AND report_date BETWEEN $1 AND $2
+      GROUP BY report_date
+      ORDER BY report_date ASC
+    `, [range.start, range.end]);
+    return rows;
+}
+async function listDailyReportsByDate(reportDate) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        r.id,
+        r.user_id AS "userId",
+        r.report_date::text AS "reportDate",
+        r.status,
+        r.content,
+        r.review_reason AS "reviewReason",
+        r.created_at AS "createdAt",
+        r.updated_at AS "updatedAt",
+        r.submitted_at AS "submittedAt",
+        r.reviewed_at AS "reviewedAt",
+        r.reviewed_by AS "reviewedBy",
+        u.name AS "userName",
+        u.email AS "userEmail",
+        u.avatar_url AS "userAvatarUrl",
+        u.role AS "userRole"
+      FROM daily_reports r
+      JOIN users u ON u.id = r.user_id
+      WHERE r.report_date = $1
+      ORDER BY u.name ASC
+    `, [reportDate]);
+    return rows;
+}
+async function listDailyReportAttachments(reportId) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        report_id AS "reportId",
+        file_url AS "fileUrl",
+        file_name AS "fileName",
+        file_size AS "fileSize",
+        mime_type AS "mimeType",
+        created_at AS "createdAt"
+      FROM daily_report_attachments
+      WHERE report_id = $1
+      ORDER BY created_at ASC
+    `, [reportId]);
+    return rows;
+}
+async function insertDailyReportAttachments(reportId, attachments) {
+    if (!attachments.length)
+        return [];
+    const values = [];
+    const params = [];
+    let idx = 1;
+    attachments.forEach((attachment) => {
+        values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, NOW())`);
+        params.push((0, crypto_1.randomUUID)(), reportId, attachment.fileUrl, attachment.fileName, attachment.fileSize, attachment.mimeType);
+    });
+    const { rows } = await exports.pool.query(`
+      INSERT INTO daily_report_attachments (
+        id,
+        report_id,
+        file_url,
+        file_name,
+        file_size,
+        mime_type,
+        created_at
+      )
+      VALUES ${values.join(', ')}
+      ON CONFLICT (report_id, file_url) DO NOTHING
+      RETURNING
+        id,
+        report_id AS "reportId",
+        file_url AS "fileUrl",
+        file_name AS "fileName",
+        file_size AS "fileSize",
+        mime_type AS "mimeType",
+        created_at AS "createdAt"
+    `, params);
+    return rows;
+}
+async function findDailyReportByUserAndDate(userId, reportDate) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        review_reason AS "reviewReason",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+      FROM daily_reports
+      WHERE user_id = $1 AND report_date = $2
+      LIMIT 1
+    `, [userId, reportDate]);
+    return rows[0];
+}
+async function findDailyReportById(id) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        review_reason AS "reviewReason",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+      FROM daily_reports
+      WHERE id = $1
+      LIMIT 1
+    `, [id]);
+    return rows[0];
+}
+async function upsertDailyReport(report) {
+    const { rows } = await exports.pool.query(`
+      INSERT INTO daily_reports (
+        id,
+        user_id,
+        report_date,
+        status,
+        content,
+        review_reason,
+        created_at,
+        updated_at,
+        submitted_at,
+        reviewed_at,
+        reviewed_by
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), $7, $8, $9)
+      ON CONFLICT (user_id, report_date)
+      DO UPDATE SET
+        status = EXCLUDED.status,
+        content = EXCLUDED.content,
+        review_reason = EXCLUDED.review_reason,
+        updated_at = NOW(),
+        submitted_at = EXCLUDED.submitted_at,
+        reviewed_at = EXCLUDED.reviewed_at,
+        reviewed_by = EXCLUDED.reviewed_by
+      RETURNING
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        review_reason AS "reviewReason",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+    `, [
+        report.id,
+        report.userId,
+        report.reportDate,
+        report.status,
+        report.content ?? null,
+        report.reviewReason ?? null,
+        report.submittedAt ?? null,
+        report.reviewedAt ?? null,
+        report.reviewedBy ?? null,
+    ]);
+    return rows[0];
+}
+async function updateDailyReportStatus(params) {
+    const { rows } = await exports.pool.query(`
+      UPDATE daily_reports
+      SET status = $2,
+          reviewed_at = $3,
+          reviewed_by = $4,
+          review_reason = $5,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING
+        id,
+        user_id AS "userId",
+        report_date::text AS "reportDate",
+        status,
+        content,
+        review_reason AS "reviewReason",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        submitted_at AS "submittedAt",
+        reviewed_at AS "reviewedAt",
+        reviewed_by AS "reviewedBy"
+    `, [
+        params.id,
+        params.status,
+        params.reviewedAt ?? null,
+        params.reviewedBy ?? null,
+        params.reviewReason ?? null,
+    ]);
+    return rows[0];
+}
 async function updateProfileRecord(profile) {
     await exports.pool.query(`
       UPDATE profiles
       SET display_name = $2,
           base_info = $3,
+          base_resume = $4,
           updated_at = NOW()
       WHERE id = $1
-    `, [profile.id, profile.displayName, JSON.stringify(profile.baseInfo ?? {})]);
-}
-async function insertResumeRecord(resume) {
-    await exports.pool.query(`
-      INSERT INTO resumes (id, profile_id, label, file_path, resume_text, resume_description, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      ON CONFLICT (id) DO NOTHING
     `, [
-        resume.id,
-        resume.profileId,
-        resume.label,
-        resume.filePath,
-        resume.resumeText ?? null,
-        resume.resumeDescription ?? null,
-        resume.createdAt,
+        profile.id,
+        profile.displayName,
+        JSON.stringify(profile.baseInfo ?? {}),
+        JSON.stringify(profile.baseResume ?? {}),
     ]);
 }
-async function deleteResumeById(resumeId) {
-    await exports.pool.query('DELETE FROM resumes WHERE id = $1', [resumeId]);
-}
-async function listResumesByProfile(profileId) {
-    const { rows } = await exports.pool.query('SELECT id, profile_id as "profileId", label, file_path as "filePath", resume_text as "resumeText", resume_description as "resumeDescription", created_at as "createdAt" FROM resumes WHERE profile_id = $1 ORDER BY created_at DESC', [profileId]);
+async function listResumeTemplates() {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM resume_templates
+      ORDER BY updated_at DESC, created_at DESC
+    `);
     return rows;
 }
-async function findResumeById(resumeId) {
-    const { rows } = await exports.pool.query('SELECT id, profile_id as "profileId", label, file_path as "filePath", resume_text as "resumeText", resume_description as "resumeDescription", created_at as "createdAt" FROM resumes WHERE id = $1', [resumeId]);
+async function findResumeTemplateById(id) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM resume_templates
+      WHERE id = $1
+      LIMIT 1
+    `, [id]);
     return rows[0];
+}
+async function insertResumeTemplate(template) {
+    const createdAt = template.createdAt ?? new Date().toISOString();
+    const updatedAt = template.updatedAt ?? createdAt;
+    const { rows } = await exports.pool.query(`
+      INSERT INTO resume_templates (
+        id,
+        name,
+        description,
+        html,
+        created_by,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+    `, [
+        template.id,
+        template.name,
+        template.description ?? null,
+        template.html,
+        template.createdBy ?? null,
+        createdAt,
+        updatedAt,
+    ]);
+    return rows[0];
+}
+async function updateResumeTemplate(template) {
+    const { rows } = await exports.pool.query(`
+      UPDATE resume_templates
+      SET name = $2,
+          description = $3,
+          html = $4,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING
+        id,
+        name,
+        description,
+        html,
+        created_by AS "createdBy",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+    `, [template.id, template.name, template.description ?? null, template.html]);
+    return rows[0];
+}
+async function deleteResumeTemplate(id) {
+    const { rowCount } = await exports.pool.query('DELETE FROM resume_templates WHERE id = $1', [id]);
+    return (rowCount ?? 0) > 0;
 }
 async function listAssignments() {
     const { rows } = await exports.pool.query(`
@@ -439,6 +1508,28 @@ async function listBidderSummaries() {
         profiles: r.profiles ?? [],
     }));
 }
+async function listApplications() {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        a.id,
+        a.session_id AS "sessionId",
+        a.bidder_user_id AS "bidderUserId",
+        u.name AS "bidderName",
+        u.email AS "bidderEmail",
+        a.profile_id AS "profileId",
+        p.display_name AS "profileDisplayName",
+        a.resume_id AS "resumeId",
+        NULL::text AS "resumeLabel",
+        a.url AS "url",
+        a.domain AS "domain",
+        a.created_at AS "createdAt"
+      FROM applications a
+      LEFT JOIN users u ON u.id = a.bidder_user_id
+      LEFT JOIN profiles p ON p.id = a.profile_id
+      ORDER BY a.created_at DESC
+    `);
+    return rows;
+}
 async function listLabelAliases() {
     const { rows } = await exports.pool.query(`
       SELECT
@@ -509,4 +1600,557 @@ async function updateLabelAliasRecord(alias) {
 }
 async function deleteLabelAlias(id) {
     await exports.pool.query('DELETE FROM label_aliases WHERE id = $1', [id]);
+}
+async function listCommunityChannels() {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        thread_type AS "threadType",
+        name,
+        description,
+        created_by AS "createdBy",
+        is_private AS "isPrivate",
+        created_at AS "createdAt",
+        last_message_at AS "lastMessageAt"
+      FROM community_threads
+      WHERE thread_type = 'CHANNEL'
+      ORDER BY name ASC
+    `);
+    return rows;
+}
+async function updateCommunityChannel(channel) {
+    const { rows } = await exports.pool.query(`
+      UPDATE community_threads
+      SET name = $2,
+          name_key = $3,
+          description = $4
+      WHERE id = $1 AND thread_type = 'CHANNEL'
+      RETURNING
+        id,
+        thread_type AS "threadType",
+        name,
+        description,
+        created_by AS "createdBy",
+        is_private AS "isPrivate",
+        created_at AS "createdAt",
+        last_message_at AS "lastMessageAt"
+    `, [channel.id, channel.name, channel.nameKey, channel.description]);
+    return rows[0];
+}
+async function deleteCommunityChannel(id) {
+    const result = await exports.pool.query(`
+      DELETE FROM community_threads
+      WHERE id = $1 AND thread_type = 'CHANNEL'
+    `, [id]);
+    return (result.rowCount ?? 0) > 0;
+}
+async function listCommunityDmThreads(userId) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        t.id,
+        t.thread_type AS "threadType",
+        t.name,
+        t.description,
+        t.is_private AS "isPrivate",
+        t.created_at AS "createdAt",
+        t.last_message_at AS "lastMessageAt",
+        COALESCE(
+          json_agg(
+            json_build_object('id', u.id, 'name', u.name, 'email', u.email, 'avatarUrl', u.avatar_url)
+          ) FILTER (WHERE u.id IS NOT NULL),
+          '[]'::json
+        ) AS participants
+      FROM community_threads t
+      JOIN community_thread_members m ON m.thread_id = t.id AND m.user_id = $1
+      LEFT JOIN community_thread_members m2 ON m2.thread_id = t.id
+      LEFT JOIN users u ON u.id = m2.user_id AND u.id <> $1
+      WHERE t.thread_type = 'DM'
+      GROUP BY t.id
+      ORDER BY COALESCE(t.last_message_at, t.created_at) DESC
+    `, [userId]);
+    return rows.map((row) => ({
+        ...row,
+        participants: row.participants ?? [],
+    }));
+}
+async function findCommunityChannelByKey(nameKey) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        thread_type AS "threadType",
+        name,
+        description,
+        created_by AS "createdBy",
+        is_private AS "isPrivate",
+        created_at AS "createdAt",
+        last_message_at AS "lastMessageAt"
+      FROM community_threads
+      WHERE thread_type = 'CHANNEL' AND name_key = $1
+      LIMIT 1
+    `, [nameKey]);
+    return rows[0];
+}
+async function findCommunityThreadById(id) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        id,
+        thread_type AS "threadType",
+        name,
+        description,
+        created_by AS "createdBy",
+        is_private AS "isPrivate",
+        created_at AS "createdAt",
+        last_message_at AS "lastMessageAt"
+      FROM community_threads
+      WHERE id = $1
+      LIMIT 1
+    `, [id]);
+    return rows[0];
+}
+async function isCommunityThreadMember(threadId, userId) {
+    const { rows } = await exports.pool.query(`
+      SELECT 1 as ok
+      FROM community_thread_members
+      WHERE thread_id = $1 AND user_id = $2
+      LIMIT 1
+    `, [threadId, userId]);
+    return rows.length > 0;
+}
+async function insertCommunityThread(thread) {
+    const createdAt = thread.createdAt ?? new Date().toISOString();
+    const { rows } = await exports.pool.query(`
+      INSERT INTO community_threads (
+        id,
+        thread_type,
+        name,
+        name_key,
+        description,
+        created_by,
+        is_private,
+        created_at,
+        last_message_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)
+      RETURNING
+        id,
+        thread_type AS "threadType",
+        name,
+        description,
+        created_by AS "createdBy",
+        is_private AS "isPrivate",
+        created_at AS "createdAt",
+        last_message_at AS "lastMessageAt"
+    `, [
+        thread.id,
+        thread.threadType,
+        thread.name ?? null,
+        thread.nameKey ?? null,
+        thread.description ?? null,
+        thread.createdBy ?? null,
+        thread.isPrivate ?? false,
+        createdAt,
+    ]);
+    return rows[0];
+}
+async function insertCommunityThreadMember(member) {
+    await exports.pool.query(`
+      INSERT INTO community_thread_members (id, thread_id, user_id, role, joined_at)
+      VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
+      ON CONFLICT (thread_id, user_id) DO NOTHING
+    `, [member.id, member.threadId, member.userId, member.role ?? 'MEMBER', member.joinedAt ?? null]);
+}
+async function findCommunityDmThreadId(userId, otherUserId) {
+    const { rows } = await exports.pool.query(`
+      SELECT t.id
+      FROM community_threads t
+      JOIN community_thread_members m1 ON m1.thread_id = t.id AND m1.user_id = $1
+      JOIN community_thread_members m2 ON m2.thread_id = t.id AND m2.user_id = $2
+      WHERE t.thread_type = 'DM'
+      LIMIT 1
+    `, [userId, otherUserId]);
+    return rows[0]?.id;
+}
+async function getCommunityDmThreadSummary(threadId, userId) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        t.id,
+        t.thread_type AS "threadType",
+        t.name,
+        t.description,
+        t.is_private AS "isPrivate",
+        t.created_at AS "createdAt",
+        t.last_message_at AS "lastMessageAt",
+        COALESCE(
+          json_agg(
+            json_build_object('id', u.id, 'name', u.name, 'email', u.email, 'avatarUrl', u.avatar_url)
+          ) FILTER (WHERE u.id IS NOT NULL),
+          '[]'::json
+        ) AS participants
+      FROM community_threads t
+      JOIN community_thread_members m ON m.thread_id = t.id AND m.user_id = $1
+      LEFT JOIN community_thread_members m2 ON m2.thread_id = t.id
+      LEFT JOIN users u ON u.id = m2.user_id AND u.id <> $1
+      WHERE t.thread_type = 'DM' AND t.id = $2
+      GROUP BY t.id
+      LIMIT 1
+    `, [userId, threadId]);
+    const row = rows[0];
+    if (!row)
+        return undefined;
+    return { ...row, participants: row.participants ?? [] };
+}
+async function listCommunityMessages(threadId) {
+    const { rows } = await exports.pool.query(`
+      SELECT
+        m.id,
+        m.thread_id AS "threadId",
+        m.sender_id AS "senderId",
+        u.name AS "senderName",
+        u.avatar_url AS "senderAvatarUrl",
+        m.body,
+        m.created_at AS "createdAt"
+      FROM community_messages m
+      LEFT JOIN users u ON u.id = m.sender_id
+      WHERE m.thread_id = $1
+      ORDER BY m.created_at ASC
+      LIMIT 200
+    `, [threadId]);
+    return rows;
+}
+async function listCommunityThreadMemberIds(threadId) {
+    const { rows } = await exports.pool.query(`
+      SELECT user_id AS "userId"
+      FROM community_thread_members
+      WHERE thread_id = $1
+    `, [threadId]);
+    return rows.map((row) => row.userId);
+}
+async function insertCommunityMessage(message) {
+    const createdAt = message.createdAt ?? new Date().toISOString();
+    const { rows } = await exports.pool.query(`
+      WITH inserted AS (
+        INSERT INTO community_messages (
+          id, thread_id, sender_id, body, reply_to_message_id, 
+          is_edited, is_deleted, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING 
+          id, thread_id, sender_id, body, reply_to_message_id,
+          is_edited, edited_at, is_deleted, deleted_at, created_at
+      )
+      SELECT
+        inserted.id,
+        inserted.thread_id AS "threadId",
+        inserted.sender_id AS "senderId",
+        u.name AS "senderName",
+        u.avatar_url AS "senderAvatarUrl",
+        inserted.body,
+        inserted.reply_to_message_id AS "replyToMessageId",
+        inserted.is_edited AS "isEdited",
+        inserted.edited_at AS "editedAt",
+        inserted.is_deleted AS "isDeleted",
+        inserted.deleted_at AS "deletedAt",
+        inserted.created_at AS "createdAt"
+      FROM inserted
+      LEFT JOIN users u ON u.id = inserted.sender_id
+    `, [
+        message.id,
+        message.threadId,
+        message.senderId,
+        message.body,
+        message.replyToMessageId ?? null,
+        message.isEdited ?? false,
+        message.isDeleted ?? false,
+        createdAt
+    ]);
+    await exports.pool.query('UPDATE community_threads SET last_message_at = $2 WHERE id = $1', [
+        message.threadId,
+        createdAt,
+    ]);
+    return rows[0];
+}
+// Message Attachments
+async function insertMessageAttachment(attachment) {
+    const { rows } = await exports.pool.query(`
+      INSERT INTO community_message_attachments 
+        (id, message_id, file_name, file_url, file_size, mime_type, thumbnail_url, width, height, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING 
+        id, message_id AS "messageId", file_name AS "fileName", file_url AS "fileUrl", 
+        file_size AS "fileSize", mime_type AS "mimeType", thumbnail_url AS "thumbnailUrl",
+        width, height, created_at AS "createdAt"
+    `, [
+        attachment.id,
+        attachment.messageId,
+        attachment.fileName,
+        attachment.fileUrl,
+        attachment.fileSize,
+        attachment.mimeType,
+        attachment.thumbnailUrl ?? null,
+        attachment.width ?? null,
+        attachment.height ?? null,
+        attachment.createdAt ?? new Date().toISOString(),
+    ]);
+    return rows[0];
+}
+async function listMessageAttachments(messageId) {
+    const { rows } = await exports.pool.query(`
+      SELECT 
+        id, message_id AS "messageId", file_name AS "fileName", file_url AS "fileUrl",
+        file_size AS "fileSize", mime_type AS "mimeType", thumbnail_url AS "thumbnailUrl",
+        width, height, created_at AS "createdAt"
+      FROM community_message_attachments
+      WHERE message_id = $1
+      ORDER BY created_at ASC
+    `, [messageId]);
+    return rows;
+}
+// Message Reactions
+async function addMessageReaction(reaction) {
+    const { rows } = await exports.pool.query(`
+      INSERT INTO community_message_reactions (id, message_id, user_id, emoji, created_at)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (message_id, user_id, emoji) DO NOTHING
+      RETURNING 
+        id, message_id AS "messageId", user_id AS "userId", emoji, created_at AS "createdAt"
+    `, [reaction.id, reaction.messageId, reaction.userId, reaction.emoji, reaction.createdAt ?? new Date().toISOString()]);
+    return rows[0];
+}
+async function removeMessageReaction(messageId, userId, emoji) {
+    const { rowCount } = await exports.pool.query('DELETE FROM community_message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3', [messageId, userId, emoji]);
+    return (rowCount ?? 0) > 0;
+}
+async function listMessageReactions(messageId, currentUserId) {
+    const { rows } = await exports.pool.query(`
+      SELECT emoji, COUNT(*)::int AS count, ARRAY_AGG(user_id) AS "userIds"
+      FROM community_message_reactions
+      WHERE message_id = $1
+      GROUP BY emoji
+      ORDER BY count DESC, emoji
+    `, [messageId]);
+    return rows.map((row) => ({
+        emoji: row.emoji,
+        count: row.count,
+        userIds: row.userIds,
+        hasCurrentUser: currentUserId ? row.userIds.includes(currentUserId) : false,
+    }));
+}
+// Unread Messages
+async function getUnreadInfo(threadId, userId) {
+    const { rows } = await exports.pool.query(`
+      SELECT 
+        thread_id AS "threadId", 
+        unread_count AS "unreadCount", 
+        last_read_message_id AS "lastReadMessageId",
+        last_read_at AS "lastReadAt"
+      FROM community_unread_messages
+      WHERE thread_id = $1 AND user_id = $2
+    `, [threadId, userId]);
+    return rows[0] ?? null;
+}
+async function markThreadAsRead(threadId, userId, messageId) {
+    await exports.pool.query(`
+      INSERT INTO community_unread_messages (id, thread_id, user_id, last_read_message_id, unread_count, last_read_at, updated_at)
+      VALUES ($1, $2, $3, $4, 0, NOW(), NOW())
+      ON CONFLICT (thread_id, user_id) 
+      DO UPDATE SET 
+        last_read_message_id = COALESCE($4, community_unread_messages.last_read_message_id),
+        unread_count = 0, 
+        last_read_at = NOW(), 
+        updated_at = NOW()
+    `, [(0, crypto_1.randomUUID)(), threadId, userId, messageId ?? null]);
+}
+async function incrementUnreadCount(threadId, excludeUserId) {
+    await exports.pool.query(`
+      INSERT INTO community_unread_messages (id, thread_id, user_id, unread_count, updated_at)
+      SELECT $1, $2, user_id, 1, NOW()
+      FROM community_thread_members
+      WHERE thread_id = $2 AND user_id != $3
+      ON CONFLICT (thread_id, user_id)
+      DO UPDATE SET unread_count = community_unread_messages.unread_count + 1, updated_at = NOW()
+    `, [(0, crypto_1.randomUUID)(), threadId, excludeUserId]);
+}
+// Pagination support for messages
+async function listCommunityMessagesWithPagination(threadId, options = {}) {
+    const limit = options.limit ?? 50;
+    let query = `
+    SELECT 
+      m.id, m.thread_id AS "threadId", m.sender_id AS "senderId", 
+      u.name AS "senderName", u.avatar_url AS "senderAvatarUrl", m.body, m.reply_to_message_id AS "replyToMessageId",
+      m.is_edited AS "isEdited", m.edited_at AS "editedAt",
+      m.is_deleted AS "isDeleted", m.deleted_at AS "deletedAt",
+      m.created_at AS "createdAt"
+    FROM community_messages m
+    LEFT JOIN users u ON u.id = m.sender_id
+    WHERE m.thread_id = $1
+  `;
+    const params = [threadId];
+    if (options.before) {
+        query += ` AND m.created_at < (SELECT created_at FROM community_messages WHERE id = $2)`;
+        params.push(options.before);
+    }
+    else if (options.after) {
+        query += ` AND m.created_at > (SELECT created_at FROM community_messages WHERE id = $2)`;
+        params.push(options.after);
+    }
+    query += ` ORDER BY m.created_at DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
+    const { rows } = await exports.pool.query(query, params);
+    return rows.reverse();
+}
+async function getMessageById(messageId) {
+    const { rows } = await exports.pool.query(`
+      SELECT 
+        m.id, m.thread_id AS "threadId", m.sender_id AS "senderId",
+        u.name AS "senderName", u.avatar_url AS "senderAvatarUrl", m.body, m.reply_to_message_id AS "replyToMessageId",
+        m.is_edited AS "isEdited", m.edited_at AS "editedAt",
+        m.is_deleted AS "isDeleted", m.deleted_at AS "deletedAt",
+        m.created_at AS "createdAt"
+      FROM community_messages m
+      LEFT JOIN users u ON u.id = m.sender_id
+      WHERE m.id = $1
+    `, [messageId]);
+    return rows[0] ?? null;
+}
+// Edit and Delete messages
+async function editMessage(messageId, body) {
+    const { rows } = await exports.pool.query(`
+      UPDATE community_messages 
+      SET body = $2, is_edited = TRUE, edited_at = NOW()
+      WHERE id = $1
+      RETURNING 
+        id, thread_id AS "threadId", sender_id AS "senderId", body,
+        reply_to_message_id AS "replyToMessageId", is_edited AS "isEdited", edited_at AS "editedAt",
+        is_deleted AS "isDeleted", deleted_at AS "deletedAt", created_at AS "createdAt"
+    `, [messageId, body]);
+    return rows[0] ?? null;
+}
+async function deleteMessage(messageId) {
+    const { rowCount } = await exports.pool.query(`
+      UPDATE community_messages 
+      SET is_deleted = TRUE, deleted_at = NOW(), body = '[deleted]'
+      WHERE id = $1
+    `, [messageId]);
+    return (rowCount ?? 0) > 0;
+}
+// Pinned Messages
+async function pinMessage(threadId, messageId, userId) {
+    const { rows } = await exports.pool.query(`
+      WITH inserted AS (
+        INSERT INTO community_pinned_messages (id, thread_id, message_id, pinned_by, pinned_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (thread_id, message_id) DO NOTHING
+        RETURNING id, thread_id, message_id, pinned_by, pinned_at
+      )
+      SELECT 
+        inserted.id, 
+        inserted.thread_id AS "threadId", 
+        inserted.message_id AS "messageId", 
+        inserted.pinned_by AS "pinnedBy", 
+        inserted.pinned_at AS "pinnedAt",
+        jsonb_build_object(
+          'id', m.id,
+          'threadId', m.thread_id,
+          'senderId', m.sender_id,
+          'senderName', u.name,
+          'senderAvatarUrl', u.avatar_url,
+          'body', m.body,
+          'createdAt', m.created_at,
+          'isEdited', m.is_edited,
+          'isDeleted', m.is_deleted
+        ) as message
+      FROM inserted
+      JOIN community_messages m ON m.id = inserted.message_id
+      JOIN users u ON u.id = m.sender_id
+    `, [(0, crypto_1.randomUUID)(), threadId, messageId, userId]);
+    return rows[0] || null;
+}
+async function unpinMessage(threadId, messageId) {
+    const { rowCount } = await exports.pool.query('DELETE FROM community_pinned_messages WHERE thread_id = $1 AND message_id = $2', [threadId, messageId]);
+    return (rowCount ?? 0) > 0;
+}
+async function listPinnedMessages(threadId) {
+    const { rows } = await exports.pool.query(`
+      SELECT 
+        p.id, 
+        p.thread_id AS "threadId", 
+        p.message_id AS "messageId", 
+        p.pinned_by AS "pinnedBy", 
+        p.pinned_at AS "pinnedAt",
+        jsonb_build_object(
+          'id', m.id,
+          'threadId', m.thread_id,
+          'senderId', m.sender_id,
+          'senderName', u.name,
+          'senderAvatarUrl', u.avatar_url,
+          'body', m.body,
+          'createdAt', m.created_at,
+          'isEdited', m.is_edited,
+          'isDeleted', m.is_deleted
+        ) as message
+      FROM community_pinned_messages p
+      JOIN community_messages m ON m.id = p.message_id
+      JOIN users u ON u.id = m.sender_id
+      WHERE p.thread_id = $1
+      ORDER BY p.pinned_at DESC
+    `, [threadId]);
+    return rows;
+}
+// User Presence
+async function updateUserPresence(userId, status) {
+    await exports.pool.query(`
+      INSERT INTO community_user_presence (user_id, status, last_seen_at, updated_at)
+      VALUES ($1, $2, NOW(), NOW())
+      ON CONFLICT (user_id) 
+      DO UPDATE SET status = $2, last_seen_at = NOW(), updated_at = NOW()
+    `, [userId, status]);
+}
+async function getUserPresence(userId) {
+    const { rows } = await exports.pool.query(`
+      SELECT user_id AS "userId", status, last_seen_at AS "lastSeenAt"
+      FROM community_user_presence
+      WHERE user_id = $1
+    `, [userId]);
+    return rows[0] ?? null;
+}
+async function listUserPresences(userIds) {
+    if (userIds.length === 0)
+        return [];
+    const { rows } = await exports.pool.query(`
+      SELECT user_id AS "userId", status, last_seen_at AS "lastSeenAt"
+      FROM community_user_presence
+      WHERE user_id = ANY($1)
+    `, [userIds]);
+    return rows;
+}
+// Message Read Receipts
+async function addMessageReadReceipt(messageId, userId) {
+    await exports.pool.query(`
+      INSERT INTO community_message_read_receipts (id, message_id, user_id, read_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (message_id, user_id) DO UPDATE SET read_at = NOW()
+    `, [(0, crypto_1.randomUUID)(), messageId, userId]);
+}
+async function getMessageReadReceipts(messageId) {
+    const { rows } = await exports.pool.query(`
+      SELECT user_id AS "userId"
+      FROM community_message_read_receipts
+      WHERE message_id = $1
+      ORDER BY read_at ASC
+    `, [messageId]);
+    return {
+        totalReaders: rows.length,
+        userIds: rows.map(r => r.userId),
+    };
+}
+async function bulkAddReadReceipts(messageIds, userId) {
+    if (messageIds.length === 0)
+        return;
+    const values = messageIds.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3}, NOW())`).join(', ');
+    const params = messageIds.flatMap(msgId => [(0, crypto_1.randomUUID)(), msgId, userId]);
+    await exports.pool.query(`
+      INSERT INTO community_message_read_receipts (id, message_id, user_id, read_at)
+      VALUES ${values}
+      ON CONFLICT (message_id, user_id) DO UPDATE SET read_at = NOW()
+    `, params);
 }

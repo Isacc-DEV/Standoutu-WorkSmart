@@ -6,6 +6,7 @@
   "scripts": {
     "start": "set ELECTRON_RUN_AS_NODE=&& ..\\node_modules\\electron\\dist\\electron.exe .",
     "prepare:embedded": "node ..\\scripts\\prepare-embedded-frontend.js",
+    "build": "npm run prepare:embedded && npx --yes electron-builder@24.13.3",
     "build:unpacked": "npm run prepare:embedded && npx --yes electron-builder@24.13.3 --dir",
     "lint": "echo \"no lint configured for electron\""
   },
@@ -16,9 +17,19 @@
   "build": {
     "appId": "com.smartwork.desktop",
     "productName": "SmartWork",
+    "icon": "build/icon.ico",
     "asar": false,
     "directories": {
       "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "files": [
       "main.js",

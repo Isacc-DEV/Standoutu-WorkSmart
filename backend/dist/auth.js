@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.authGuard = void 0;
 exports.signToken = signToken;
+exports.verifyToken = verifyToken;
 exports.forbidObserver = forbidObserver;
 const fastify_plugin_1 = __importDefault(require("fastify-plugin"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
@@ -14,17 +15,21 @@ function signToken(user) {
     const payload = { sub: user.id, role: user.role, email: user.email, name: user.name };
     return jsonwebtoken_1.default.sign(payload, JWT_SECRET, { expiresIn: '8h' });
 }
+function verifyToken(token) {
+    return jsonwebtoken_1.default.verify(token, JWT_SECRET);
+}
 exports.authGuard = (0, fastify_plugin_1.default)(async (instance) => {
     instance.addHook('preHandler', async (request, reply) => {
         const routeUrl = request.routeOptions?.url;
         if (routeUrl === '/health' ||
             routeUrl === '/auth/login' ||
             routeUrl === '/auth/signup' ||
-            (routeUrl && routeUrl.startsWith('/ws/browser'))) {
+            (routeUrl && routeUrl.startsWith('/ws/browser')) ||
+            (routeUrl && routeUrl.startsWith('/ws/community'))) {
             return;
         }
         // Also allow websocket upgrade paths detected via raw url.
-        if (request.raw?.url?.startsWith('/ws/browser')) {
+        if (request.raw?.url?.startsWith('/ws/browser') || request.raw?.url?.startsWith('/ws/community')) {
             return;
         }
         const header = request.headers.authorization;
