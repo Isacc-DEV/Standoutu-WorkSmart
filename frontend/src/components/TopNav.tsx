@@ -116,8 +116,9 @@ export default function TopNav() {
 
   const isAdmin = user?.role === 'ADMIN';
   const isManager = user?.role === 'MANAGER' || isAdmin;
-  const reportsHref = '/reports';
-  const reportsActive = pathname.startsWith('/reports');
+  const reportsHref = isManager ? '/admin/reports' : '/reports';
+  const reportsActive =
+    pathname.startsWith('/reports') || pathname.startsWith('/admin/reports');
   const [navNotifications, setNavNotifications] = useState({ ...emptyNotifications });
   const avatarUrl = user?.avatarUrl?.trim();
   const hasAvatar = Boolean(avatarUrl) && avatarUrl?.toLowerCase() !== 'nope';

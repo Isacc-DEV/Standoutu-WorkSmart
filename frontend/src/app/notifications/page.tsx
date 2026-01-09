@@ -32,6 +32,7 @@ export default function NotificationsPage() {
   const router = useRouter();
   const { user, token, loading } = useAuth();
   const isReviewer = user?.role === 'ADMIN' || user?.role === 'MANAGER';
+  const reportFallback = isReviewer ? '/admin/reports' : '/reports';
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loadingList, setLoadingList] = useState(false);
   const [error, setError] = useState('');
@@ -113,7 +114,7 @@ export default function NotificationsPage() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => router.push(item.href || '/reports')}
+                onClick={() => router.push(item.href || reportFallback)}
                 className="w-full rounded-3xl border border-slate-200 bg-white px-5 py-4 text-left shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
               >
                 <div className="flex items-start justify-between gap-3">

@@ -2609,7 +2609,7 @@ async function bootstrap() {
           kind: "report",
           message: `${item.userName} ${isUpdated ? "updated" : "sent"} ${reportDate} report.`,
           createdAt: submittedAt,
-          href: "/reports",
+          href: "/admin/reports",
         });
       });
     } else {

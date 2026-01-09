@@ -9,7 +9,7 @@ import { useAuth } from '../../../lib/useAuth';
 export default function AdminReportsPage() {
   const router = useRouter();
   const { user, token, loading } = useAuth();
-  const canReview = user?.role === 'ADMIN' || user?.role === 'MANAGER';
+  const canReview = user?.role === 'ADMIN';
 
   useEffect(() => {
     if (loading) return;
