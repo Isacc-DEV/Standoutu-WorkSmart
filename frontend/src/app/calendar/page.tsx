@@ -8,8 +8,10 @@ import { DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core'
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
+import luxon3Plugin from '@fullcalendar/luxon3';
 import TopNav from '../../components/TopNav';
 import { useAuth } from '../../lib/useAuth';
+import { DEFAULT_TIMEZONE_ID, TIMEZONE_OPTIONS, type TimezoneOption } from '../../lib/timezones';
 
 type CalendarAccount = {
   email: string;
@@ -50,18 +52,74 @@ type CalendarEventsResponse = {
   message?: string;
 };
 
+type TimezoneOptionWithDisplay = TimezoneOption & {
+  displayLabel: string;
+  offsetMinutes: number;
+};
+
 const chipBase =
   'inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700';
 
-const TIMEZONE_OPTIONS = [
-  { id: 'ETC', label: 'ETC', graph: 'UTC', calendar: 'UTC' },
-  { id: 'UTC', label: 'UTC', graph: 'UTC', calendar: 'UTC' },
-  { id: 'PTC', label: 'PTC', graph: 'Pacific Standard Time', calendar: 'America/Los_Angeles' },
-];
 const MAILBOX_STORAGE_KEY = 'calendar.extraMailboxes';
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const normalizeMailbox = (mailbox: string) => mailbox.trim().toLowerCase();
+
+const resolveDefaultTimezoneId = () => {
+  if (typeof Intl === 'undefined') return DEFAULT_TIMEZONE_ID;
+  const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!localTz) return DEFAULT_TIMEZONE_ID;
+  const match = TIMEZONE_OPTIONS.find((option) => option.calendar === localTz);
+  return match?.id ?? DEFAULT_TIMEZONE_ID;
+};
+
+const getTimezoneOffsetMinutes = (timeZone: string, date: Date) => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const year = Number(values.year);
+    const month = Number(values.month);
+    const day = Number(values.day);
+    const hour = Number(values.hour);
+    const minute = Number(values.minute);
+    const second = Number(values.second);
+    if ([year, month, day, hour, minute, second].some((value) => Number.isNaN(value))) {
+      return 0;
+    }
+    const utcTime = Date.UTC(year, month - 1, day, hour, minute, second);
+    return Math.round((utcTime - date.getTime()) / 60000);
+  } catch (err) {
+    return 0;
+  }
+};
+
+const formatUtcOffset = (offsetMinutes: number) => {
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMinutes);
+  const hours = Math.floor(abs / 60);
+  const minutes = abs % 60;
+  return `UTC${sign}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+const buildTimezoneOptions = (date = new Date()): TimezoneOptionWithDisplay[] =>
+  TIMEZONE_OPTIONS.map((option) => {
+    const offsetMinutes = getTimezoneOffsetMinutes(option.calendar, date);
+    return {
+      ...option,
+      offsetMinutes,
+      displayLabel: `${option.label} (${formatUtcOffset(offsetMinutes)})`,
+    };
+  });
 
 const uniqueMailboxes = (mailboxes: string[]) => {
   const seen = new Set<string>();
@@ -92,7 +150,7 @@ export default function CalendarPage() {
   const [extraMailboxes, setExtraMailboxes] = useState<string[]>([]);
   const [mailboxInput, setMailboxInput] = useState('');
   const [mailboxError, setMailboxError] = useState<string | null>(null);
-  const [timezoneId, setTimezoneId] = useState<string>(TIMEZONE_OPTIONS[0].id);
+  const [timezoneId, setTimezoneId] = useState<string>(() => resolveDefaultTimezoneId());
   const [hiddenMailboxes, setHiddenMailboxes] = useState<string[]>([]);
   const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
   const [eventPopover, setEventPopover] = useState<EventPopover | null>(null);
@@ -130,16 +188,25 @@ export default function CalendarPage() {
       }));
   }, [events, hiddenMailboxes]);
 
+  const timezoneOptions = useMemo(() => buildTimezoneOptions(), []);
+
   const selectedTimezone = useMemo(
-    () => TIMEZONE_OPTIONS.find((tz) => tz.id === timezoneId) ?? TIMEZONE_OPTIONS[0],
-    [timezoneId],
+    () => timezoneOptions.find((tz) => tz.id === timezoneId) ?? timezoneOptions[0],
+    [timezoneId, timezoneOptions],
   );
 
   const scrollTime = useMemo(() => {
     const now = new Date();
-    const startHour = clamp(now.getHours() - 4, 0, 16);
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      hour12: false,
+      timeZone: selectedTimezone.calendar,
+    });
+    const hour = Number(formatter.format(now));
+    const baseHour = Number.isNaN(hour) ? now.getHours() : hour;
+    const startHour = clamp(baseHour - 4, 0, 16);
     return `${String(startHour).padStart(2, '0')}:00:00`;
-  }, []);
+  }, [selectedTimezone.calendar]);
 
   const mailboxCards = useMemo(() => {
     const connected = connectedAccounts.map((account) => ({
@@ -551,7 +618,7 @@ export default function CalendarPage() {
                               </span>
                               <span className="text-xs text-slate-600">{account.email}</span>
                               <span className="text-[11px] text-slate-500">
-                                Timezone {selectedTimezone.label}
+                                Timezone {selectedTimezone.displayLabel}
                               </span>
                             </div>
                           );
@@ -607,15 +674,15 @@ export default function CalendarPage() {
                               onChange={(e) => setTimezoneId(e.target.value)}
                               className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none ring-1 ring-transparent focus:ring-slate-300"
                             >
-                              {TIMEZONE_OPTIONS.map((tz) => (
+                              {timezoneOptions.map((tz) => (
                                 <option key={tz.id} value={tz.id}>
-                                  {tz.label}
+                                  {tz.displayLabel}
                                 </option>
                               ))}
                             </select>
                           </div>
                           <div className="mt-2 text-xs text-slate-500">
-                            Calendar times show in {selectedTimezone.label}.
+                            Calendar times show in {selectedTimezone.displayLabel}.
                           </div>
                         </div>
                         <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-3 py-3">
@@ -755,7 +822,7 @@ export default function CalendarPage() {
                   </div>
                 ) : null}
                 <FullCalendar
-                  plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+                  plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, luxon3Plugin]}
                   initialView="timeGridWeek"
                   headerToolbar={false}
                   height={680}

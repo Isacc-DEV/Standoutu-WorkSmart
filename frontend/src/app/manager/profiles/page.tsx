@@ -1223,7 +1223,7 @@ export default function ManagerProfilesPage() {
                               disabled={baseResumeLocked}
                               className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                              Add
+                              Role +
                             </button>
                           ) : null}
                         </div>
@@ -1398,7 +1398,7 @@ export default function ManagerProfilesPage() {
                               disabled={baseResumeLocked}
                               className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                              Add
+                              Education +
                             </button>
                           ) : null}
                         </div>

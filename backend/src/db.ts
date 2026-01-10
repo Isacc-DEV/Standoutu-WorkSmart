@@ -52,6 +52,7 @@ type StoredCalendarEvent = {
   isAllDay?: boolean;
   organizer?: string;
   location?: string;
+  timezone?: string | null;
 };
 
 const DEFAULT_ADMIN_DATABASE = 'postgres';
@@ -930,7 +931,8 @@ export async function listCalendarEventsForOwner(
         end_at AS "end",
         is_all_day AS "isAllDay",
         organizer,
-        location
+        location,
+        timezone
       FROM calendar_events
       WHERE owner_user_id = $1
         AND ($2::text[] IS NULL OR mailbox = ANY($2))

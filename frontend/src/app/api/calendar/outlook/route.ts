@@ -2,6 +2,7 @@ import type { Account } from '@prisma/client';
 import { NextResponse, type NextRequest } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { prisma } from '@/lib/prisma';
+import { resolveCalendarTimeZone } from '@/lib/timezones';
 import { authOptions } from '../../auth/[...nextauth]/route';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:4000';
@@ -48,6 +49,7 @@ type StoredEvent = {
   organizer?: string | null;
   location?: string | null;
   mailbox?: string | null;
+  timezone?: string | null;
 };
 
 type StoredEventsResponse = {
@@ -65,13 +67,94 @@ type CalendarAccount = {
 
 const normalizeMailbox = (mailbox: string) => mailbox.trim().toLowerCase();
 
-function mapEvents(events: GraphEvent[], mailbox: string) {
+const hasTimeZoneOffset = (value: string) => /([zZ]|[+-]\d{2}:\d{2})$/.test(value);
+
+const parseDateTimeParts = (value: string) => {
+  const [datePart, timePartRaw] = value.split('T');
+  if (!datePart || !timePartRaw) return null;
+  const [yearStr, monthStr, dayStr] = datePart.split('-');
+  if (!yearStr || !monthStr || !dayStr) return null;
+  const timePart = timePartRaw.replace(/[zZ]$/, '');
+  const [hourStr, minuteStr, secondStr] = timePart.split(':');
+  if (!hourStr || !minuteStr) return null;
+  const secondValue = secondStr ? secondStr.split('.')[0] : '0';
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  const second = Number(secondValue);
+  if ([year, month, day, hour, minute, second].some((part) => Number.isNaN(part))) {
+    return null;
+  }
+  return { year, month, day, hour, minute, second };
+};
+
+const getTimezoneOffsetMinutes = (timeZone: string, date: Date) => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const year = Number(values.year);
+    const month = Number(values.month);
+    const day = Number(values.day);
+    const hour = Number(values.hour);
+    const minute = Number(values.minute);
+    const second = Number(values.second);
+    if ([year, month, day, hour, minute, second].some((part) => Number.isNaN(part))) {
+      return 0;
+    }
+    const utcTime = Date.UTC(year, month - 1, day, hour, minute, second);
+    return Math.round((utcTime - date.getTime()) / 60000);
+  } catch (err) {
+    return 0;
+  }
+};
+
+const toUtcIso = (dateTime: string, timeZone?: string | null) => {
+  if (!dateTime) return '';
+  if (hasTimeZoneOffset(dateTime)) {
+    const parsed = new Date(dateTime);
+    return Number.isNaN(parsed.getTime()) ? dateTime : parsed.toISOString();
+  }
+  const parts = parseDateTimeParts(dateTime);
+  if (!parts) return dateTime;
+  const ianaTimeZone = resolveCalendarTimeZone(timeZone);
+  const utcGuess = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second));
+  const offsetMinutes = getTimezoneOffsetMinutes(ianaTimeZone, utcGuess);
+  const utcTime = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) -
+    offsetMinutes * 60 * 1000;
+  return new Date(utcTime).toISOString();
+};
+
+const normalizeEventTime = (
+  dateTime: string,
+  timeZone?: string | null,
+  isAllDay?: boolean,
+) => {
+  if (!dateTime) return '';
+  if (isAllDay) {
+    return dateTime.includes('T') ? dateTime.split('T')[0] : dateTime;
+  }
+  return toUtcIso(dateTime, timeZone);
+};
+
+function mapEvents(events: GraphEvent[], mailbox: string, fallbackTimeZone: string) {
   return events
     .map((ev) => ({
       id: `${mailbox}:${ev.id}`,
       title: ev.subject || 'Busy',
-      start: ev.start?.dateTime || '',
-      end: ev.end?.dateTime || '',
+      start: normalizeEventTime(ev.start?.dateTime || '', fallbackTimeZone, ev.isAllDay),
+      end: normalizeEventTime(ev.end?.dateTime || '', fallbackTimeZone, ev.isAllDay),
       isAllDay: Boolean(ev.isAllDay),
       organizer: ev.organizer?.emailAddress?.name || ev.organizer?.emailAddress?.address || undefined,
       location: ev.location?.displayName || undefined,
@@ -80,13 +163,21 @@ function mapEvents(events: GraphEvent[], mailbox: string) {
     .filter((ev) => ev.start && ev.end);
 }
 
-function normalizeStoredEvents(events: StoredEvent[]) {
+function normalizeStoredEvents(events: StoredEvent[], fallbackTimeZone?: string | null) {
   return events
     .map((event) => ({
       id: event.id,
       title: event.title || 'Busy',
-      start: event.start || '',
-      end: event.end || '',
+      start: normalizeEventTime(
+        event.start || '',
+        event.timezone ?? fallbackTimeZone,
+        event.isAllDay,
+      ),
+      end: normalizeEventTime(
+        event.end || '',
+        event.timezone ?? fallbackTimeZone,
+        event.isAllDay,
+      ),
       isAllDay: Boolean(event.isAllDay),
       organizer: event.organizer ?? undefined,
       location: event.location ?? undefined,
@@ -100,8 +191,9 @@ async function fetchStoredEvents(params: {
   start: string;
   end: string;
   mailboxes: string[];
+  timezone?: string | null;
 }) {
-  const { authHeader, start, end, mailboxes } = params;
+  const { authHeader, start, end, mailboxes, timezone } = params;
   if (!authHeader) {
     return { events: [] as ReturnType<typeof normalizeStoredEvents>, error: 'Missing auth token.' };
   }
@@ -122,7 +214,7 @@ async function fetchStoredEvents(params: {
       return { events: [] as ReturnType<typeof normalizeStoredEvents>, error: 'Failed to load cached events.' };
     }
     const data = (await res.json()) as StoredEventsResponse;
-    const events = normalizeStoredEvents(Array.isArray(data.events) ? data.events : []);
+    const events = normalizeStoredEvents(Array.isArray(data.events) ? data.events : [], timezone);
     return { events };
   } catch (err) {
     console.error('Stored events lookup failed', err);
@@ -225,7 +317,7 @@ async function fetchCalendarView(params: {
     const message = data?.error?.message || 'Failed to load calendar events from Microsoft Graph';
     return { events: [] as ReturnType<typeof mapEvents>, error: message };
   }
-  return { events: mapEvents(data.value, label) };
+  return { events: mapEvents(data.value, label, tz) };
 }
 
 async function loadConnectedAccounts(params: {
@@ -304,6 +396,7 @@ export async function GET(request: NextRequest) {
         start,
         end,
         mailboxes: mailboxParams,
+        timezone: tz,
       });
       if (error) {
         return NextResponse.json({ message: error }, { status: 401 });
@@ -338,6 +431,7 @@ export async function GET(request: NextRequest) {
       start,
       end,
       mailboxes: [],
+      timezone: tz,
     });
     if (cachedEvents.length) {
       const connectedAccounts = await loadConnectedAccounts({
