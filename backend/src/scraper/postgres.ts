@@ -1,6 +1,6 @@
 import { Pool, type PoolConfig } from "pg";
-import type { ScrapeStore, SourceUrlRecord } from "./types.js";
-import { buildPoolConfig } from "./db.js";
+import type { ScrapeStore, SourceUrlRecord } from "./types";
+import { buildPoolConfig } from "./db";
 
 type TableNames = {
   sourceUrls: string;

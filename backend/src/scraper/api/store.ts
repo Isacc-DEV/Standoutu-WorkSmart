@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { resolveTableNames, type TableNames } from "../db.js";
+import { resolveTableNames, type TableNames } from "../db";
 
 export type JobLinkRecord = {
   id: number;

@@ -1,7 +1,7 @@
 import cron from "node-cron";
-import { scrapeUrls } from "./scrape.js";
-import { ensureScrapeSchema, createScrapePool } from "./db.js";
-import { createPostgresScrapeStore } from "./postgres.js";
+import { scrapeUrls } from "./scrape";
+import { ensureScrapeSchema, createScrapePool } from "./db";
+import { createPostgresScrapeStore } from "./postgres";
 
 const log = (message: string, meta?: Record<string, unknown>): void => {
   const suffix = meta ? ` ${JSON.stringify(meta)}` : "";

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { createScrapePool, ensureScrapeSchema, resolveTableNames } from "../db.js";
-import { createScraperApiStore } from "./store.js";
+import { createScrapePool, ensureScrapeSchema, resolveTableNames } from "../db";
+import { createScraperApiStore } from "./store";
 
 const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),

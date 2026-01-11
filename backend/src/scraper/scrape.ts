@@ -1,7 +1,7 @@
 import { chromium, type Browser, type Page } from "playwright";
 import { XMLParser } from "fast-xml-parser";
-import { allowedSourceMap, env } from "./config.js";
-import type { ScrapeStore } from "./types.js";
+import { allowedSourceMap, env } from "./config";
+import type { ScrapeStore } from "./types";
 
 type BrowserScrapeConfig = {
   kind: "browser";

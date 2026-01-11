@@ -1,5 +1,5 @@
 import { Pool, type PoolConfig } from "pg";
-import { env } from "./config.js";
+import { env } from "./config";
 
 export type TableNames = {
   countries: string;

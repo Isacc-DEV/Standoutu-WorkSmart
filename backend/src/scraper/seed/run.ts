@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createScrapePool, ensureScrapeSchema, resolveTableNames } from "../db.js";
+import { createScrapePool, ensureScrapeSchema, resolveTableNames } from "../db";
 
 type SeedData = {
   countries: Array<{ name: string }>;
