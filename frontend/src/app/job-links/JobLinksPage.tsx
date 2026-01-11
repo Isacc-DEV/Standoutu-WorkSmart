@@ -7,6 +7,7 @@ import { useAuth } from "../../lib/useAuth";
 import { fetchCountries, fetchJobLinks } from "./api";
 import JobLinksFilters from "./components/JobLinksFilters";
 import JobLinksList from "./components/JobLinksList";
+import JobLinksErrorState from "./components/JobLinksErrorState";
 import type { Country, DateRangeKey, JobLink } from "./types";
 import { buildSinceIso, useDebouncedValue } from "./utils";
 
@@ -45,7 +46,7 @@ export default function JobLinksPage() {
   }, [loading, user, token, router]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || user?.role === "OBSERVER") return;
     let active = true;
     const loadCountries = async () => {
       try {
@@ -64,14 +65,14 @@ export default function JobLinksPage() {
     return () => {
       active = false;
     };
-  }, [token]);
+  }, [token, user?.role]);
 
   useEffect(() => {
     setOffset(0);
   }, [debouncedSearch, selectedCountryId, range, limit]);
 
   const loadLinks = useCallback(async () => {
-    if (!token) return;
+    if (!token || user?.role === "OBSERVER") return;
     setLoadingLinks(true);
     setError("");
     try {
@@ -97,7 +98,7 @@ export default function JobLinksPage() {
     } finally {
       setLoadingLinks(false);
     }
-  }, [token, limit, offset, debouncedSearch, parsedCountryId, since]);
+  }, [token, user?.role, limit, offset, debouncedSearch, parsedCountryId, since]);
 
   useEffect(() => {
     void loadLinks();
@@ -117,6 +118,109 @@ export default function JobLinksPage() {
   const showingEnd = Math.min(offset + links.length, total);
   const canPrev = offset > 0;
   const canNext = offset + limit < total;
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-[#f8fafc] via-[#f1f5f9] to-white text-slate-900">
+        <TopNav />
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-16 text-center text-sm text-slate-600">
+          Loading job links...
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-[#f8fafc] via-[#f1f5f9] to-white text-slate-900">
+        <TopNav />
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-16 text-center text-sm text-slate-600">
+          Redirecting to login...
+        </div>
+      </main>
+    );
+  }
+
+  if (user.role === "OBSERVER") {
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-[#f8fafc] via-[#f1f5f9] to-white text-slate-900">
+        <TopNav />
+        <div className="mx-auto w-full max-w-2xl px-4 py-20">
+          <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-lg">
+            <div className="mb-6">
+              <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+                <svg
+                  className="h-10 w-10"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                  />
+                </svg>
+              </div>
+              <h1 className="mb-2 text-3xl font-bold text-slate-900">
+                Access Restricted
+              </h1>
+              <p className="text-slate-600">
+                You do not have permission to access job links.
+              </p>
+            </div>
+
+            <div className="mb-6 rounded-2xl bg-slate-50 p-6 text-left">
+              <h2 className="mb-3 text-sm font-semibold text-slate-900">
+                Why can't I access this page?
+              </h2>
+              <p className="mb-4 text-sm text-slate-600">
+                Your current role (
+                <span className="font-semibold text-slate-900">
+                  {user.role}
+                </span>
+                ) has view-only permissions. Job link access requires an active
+                bidder or manager role.
+              </p>
+              <h2 className="mb-3 text-sm font-semibold text-slate-900">
+                How to get access
+              </h2>
+              <ul className="space-y-2 text-sm text-slate-600">
+                <li className="flex items-start gap-2">
+                  <span className="mt-0.5 text-blue-600">{">"}</span>
+                  <span>Contact your administrator to upgrade your role</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="mt-0.5 text-blue-600">{">"}</span>
+                  <span>Request access through your manager</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="mt-0.5 text-blue-600">{">"}</span>
+                  <span>Email support with your access request</span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="flex justify-center gap-3">
+              <button
+                onClick={() => router.push("/")}
+                className="rounded-2xl bg-slate-900 px-6 py-3 font-semibold text-white transition hover:bg-slate-800"
+              >
+                Go to Dashboard
+              </button>
+              <button
+                onClick={() => router.push("/workspace")}
+                className="rounded-2xl border border-slate-200 px-6 py-3 font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Go to Workspace
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-[#f8fafc] via-[#f1f5f9] to-white text-slate-900">
@@ -159,7 +263,7 @@ export default function JobLinksPage() {
               Last updated
             </div>
             <div className="text-2xl font-semibold text-slate-900">
-              {lastUpdatedAt ? lastUpdatedAt.toLocaleTimeString() : "—"}
+              {lastUpdatedAt ? lastUpdatedAt.toLocaleTimeString() : "-"}
             </div>
             <div className="text-xs text-slate-500">
               {lastUpdatedAt ? lastUpdatedAt.toLocaleDateString() : "Not loaded yet"}
@@ -167,11 +271,7 @@ export default function JobLinksPage() {
           </div>
         </section>
 
-        {countriesError ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {countriesError}
-          </div>
-        ) : null}
+        {countriesError ? <JobLinksErrorState message={countriesError} /> : null}
 
         <JobLinksFilters
           search={search}
@@ -188,13 +288,9 @@ export default function JobLinksPage() {
           loading={loadingLinks}
         />
 
-        {error ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {error}
-          </div>
-        ) : null}
+        {error ? <JobLinksErrorState message={error} /> : null}
 
-        <JobLinksList items={links} loading={loadingLinks} />
+        <JobLinksList items={links} loading={loadingLinks} startIndex={offset} />
 
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200/70 bg-white px-5 py-4 text-sm text-slate-600 shadow-[0_18px_60px_-50px_rgba(15,23,42,0.4)]">
           <div>

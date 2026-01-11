@@ -18,11 +18,15 @@ export const formatRelativeTime = (value: string) => {
   const diffMs = Date.now() - timestamp;
   const diffMinutes = Math.floor(diffMs / 60000);
   if (diffMinutes < 1) return "Just now";
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffMinutes < 60) {
+    return diffMinutes === 1 ? "1 min ago" : `${diffMinutes} mins ago`;
+  }
   const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) {
+    return diffHours === 1 ? "1 hour ago" : `${diffHours} hours ago`;
+  }
   const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
+  return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
 };
 
 export const safeDomain = (url: string) => {

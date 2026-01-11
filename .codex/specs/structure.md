@@ -123,6 +123,8 @@
           - page.tsx
         - job-links/
           - components/
+            - JobLinksEmptyState.tsx
+            - JobLinksErrorState.tsx
             - JobLinksFilters.tsx
             - JobLinksList.tsx
           - api.ts

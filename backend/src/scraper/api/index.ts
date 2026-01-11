@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { forbidObserver } from "../../auth";
 import { createScrapePool, ensureScrapeSchema, resolveTableNames } from "../db";
 import { createScraperApiStore } from "./store";
 
@@ -36,6 +37,7 @@ export const registerScraperApiRoutes = async (
   const store = createScraperApiStore(pool, tableNames);
 
   app.get("/scraper/job-links", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
     const actor = request.authUser;
     if (!actor || actor.isActive === false) {
       return reply.status(401).send({ message: "Unauthorized" });
@@ -76,6 +78,7 @@ export const registerScraperApiRoutes = async (
   });
 
   app.get("/scraper/countries", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
     const actor = request.authUser;
     if (!actor || actor.isActive === false) {
       return reply.status(401).send({ message: "Unauthorized" });
