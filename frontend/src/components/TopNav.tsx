@@ -46,9 +46,9 @@ function getDesktopBridge() {
   return (window as unknown as { smartwork?: DesktopBridge }).smartwork;
 }
 
-function getFaviconLink() {
-  if (typeof document === 'undefined') return null;
-  return document.querySelector<HTMLLinkElement>("link[rel~='icon']");
+function getFaviconLinks() {
+  if (typeof document === 'undefined') return [];
+  return Array.from(document.querySelectorAll<HTMLLinkElement>("link[rel~='icon']"));
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -141,7 +141,6 @@ async function createOverlayBadge(count: number) {
 }
 
 function useNotificationBadges(count: number) {
-  const baseFaviconRef = useRef<string | null>(null);
   const faviconRequestRef = useRef(0);
   const overlayRequestRef = useRef(0);
 
@@ -155,25 +154,40 @@ function useNotificationBadges(count: number) {
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    const link = getFaviconLink();
-    if (!link) return;
-    if (!baseFaviconRef.current) {
-      baseFaviconRef.current = link.href;
-    }
-    const baseHref = baseFaviconRef.current;
+    const links = getFaviconLinks();
+    if (!links.length) return;
     const requestId = ++faviconRequestRef.current;
     if (count <= 0) {
-      if (link.href !== baseHref) {
-        link.href = baseHref;
-      }
+      links.forEach((link) => {
+        const stored = link.getAttribute('data-smartwork-base-href');
+        const baseHref = stored || link.href;
+        if (!stored) {
+          link.setAttribute('data-smartwork-base-href', baseHref);
+        }
+        if (link.href !== baseHref) {
+          link.href = baseHref;
+        }
+      });
       return;
     }
-    void createBadgedFavicon(baseHref, count).then((href) => {
+    void Promise.all(
+      links.map(async (link) => {
+        const stored = link.getAttribute('data-smartwork-base-href');
+        const baseHref = stored || link.href;
+        if (!stored) {
+          link.setAttribute('data-smartwork-base-href', baseHref);
+        }
+        const href = await createBadgedFavicon(baseHref, count);
+        return { link, href };
+      }),
+    ).then((results) => {
       if (faviconRequestRef.current !== requestId) return;
-      if (href && link.href !== href) {
-        link.href = href;
-        link.type = 'image/png';
-      }
+      results.forEach(({ link, href }) => {
+        if (href && link.href !== href) {
+          link.href = href;
+          link.type = 'image/png';
+        }
+      });
     });
   }, [count]);
 

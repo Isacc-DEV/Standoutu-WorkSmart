@@ -271,6 +271,12 @@ export default function Page() {
   const jdPreviewOpenRef = useRef(false);
   const jdSelectionModeRef = useRef(false);
   const webviewRef = useRef<WebviewHandle | null>(null);
+  const setWebviewRef = useCallback((node: WebviewHandle | null) => {
+    webviewRef.current = node;
+    if (node) {
+      node.setAttribute("allowpopups", "true");
+    }
+  }, []);
   const [isClient, setIsClient] = useState(false);
   const router = useRouter();
   const showError = useCallback((message: string) => {
@@ -1575,11 +1581,10 @@ export default function Page() {
                   isElectron ? (
                     <div className="relative h-full w-full">
                       <webview
-                        ref={webviewRef as unknown as React.Ref<HTMLWebViewElement>}
+                        ref={setWebviewRef as unknown as React.Ref<HTMLWebViewElement>}
                         key={browserSrc}
                         src={browserSrc}
                         partition={webviewPartition}
-                        allowpopups="true"
                         style={{ height: "100%", width: "100%", backgroundColor: "#020617" }}
                       />
                       <div className="absolute top-2 right-3 flex items-center gap-2 text-[11px] text-slate-800">
