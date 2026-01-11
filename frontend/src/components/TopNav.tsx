@@ -31,8 +31,6 @@ const emptyNotifications = {
   tasks: 0,
   reports: 0,
   system: 0,
-  about: 0,
-  career: 0,
   manager: 0,
   admin: 0,
 };
@@ -303,18 +301,6 @@ export default function TopNav() {
             label="Reports"
             active={reportsActive}
             notificationCount={navNotifications.reports}
-          />
-          <NavItem
-            href="/about"
-            label="About"
-            active={pathname.startsWith('/about')}
-            notificationCount={navNotifications.about}
-          />
-          <NavItem
-            href="/career"
-            label="Career"
-            active={pathname.startsWith('/career')}
-            notificationCount={navNotifications.career}
           />
           {isManager && (
             <NavItem

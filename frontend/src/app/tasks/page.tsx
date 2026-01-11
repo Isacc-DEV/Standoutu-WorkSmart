@@ -33,6 +33,7 @@ type Task = {
   notes?: string | null;
   href?: string | null;
   createdBy?: string | null;
+  createdAt: string;
   rejectionReason?: string | null;
 };
 
@@ -145,6 +146,19 @@ function formatShortDate(value?: string | null) {
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
+  }).format(date);
+}
+
+function formatCreatedAt(value?: string | null) {
+  if (!value) return 'unknown';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'unknown';
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
   }).format(date);
 }
 
@@ -274,7 +288,7 @@ export default function TasksPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | TaskStatus>('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | TaskPriority>('all');
-  const [sortKey, setSortKey] = useState<'due' | 'priority'>('due');
+  const [sortKey, setSortKey] = useState<'due' | 'priority' | 'created'>('priority');
   const [showDone, setShowDone] = useState(true);
   const [showAssignedToMe, setShowAssignedToMe] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -679,6 +693,11 @@ export default function TasksPage() {
           PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority)
         );
       }
+      if (sortKey === 'created') {
+        const aCreated = a.createdAt ?? '';
+        const bCreated = b.createdAt ?? '';
+        return bCreated.localeCompare(aCreated);
+      }
       const aDue = a.dueDate ?? '9999-12-31';
       const bDue = b.dueDate ?? '9999-12-31';
       return aDue.localeCompare(bDue);
@@ -933,12 +952,13 @@ export default function TasksPage() {
                     aria-label="Sort tasks"
                     value={sortKey}
                     onChange={(event) =>
-                      setSortKey(event.target.value as 'due' | 'priority')
+                      setSortKey(event.target.value as 'due' | 'priority' | 'created')
                     }
                     className="appearance-none rounded-full border border-slate-200 bg-transparent px-4 py-2 pr-9 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700 outline-none ring-1 ring-transparent focus:ring-slate-300"
                   >
                     <option value="due">Due date</option>
                     <option value="priority">Priority</option>
+                    <option value="created">Created</option>
                   </select>
                   <svg
                     aria-hidden="true"
@@ -1200,16 +1220,19 @@ export default function TasksPage() {
                         </div>
                       </div>
                       <div className="space-y-2 text-right">
-                        <div className={`text-xs font-semibold uppercase tracking-[0.18em] ${dueTone}`}>
-                          Due {dueDateLabel}
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          Assigned to: {formatAssignees(task.assignees)}
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          Project: {task.project ?? 'No project'}
-                        </div>
+                      <div className={`text-xs font-semibold uppercase tracking-[0.18em] ${dueTone}`}>
+                        Due {dueDateLabel}
                       </div>
+                      <div className="text-xs text-slate-500">
+                        Assigned to: {formatAssignees(task.assignees)}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        Project: {task.project ?? 'No project'}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        Created {formatCreatedAt(task.createdAt)}
+                      </div>
+                    </div>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       {task.tags.map((tag) => (
@@ -1366,6 +1389,9 @@ export default function TasksPage() {
                   )}
                   <div className="text-xs text-slate-500">
                     {isAdmin && adminEditOpen ? 'Pick a date from the calendar.' : formatDueLabel(focusedTask, today)}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-400">
+                    Created {formatCreatedAt(focusedTask.createdAt)}
                   </div>
                 </div>
               </div>
