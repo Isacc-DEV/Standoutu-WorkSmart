@@ -105,6 +105,82 @@ export interface Assignment {
   unassignedAt?: string | null;
 }
 
+export type TaskStatus = "todo" | "in_progress" | "in_review" | "done";
+export type TaskPriority = "low" | "medium" | "high" | "urgent";
+export type TaskApprovalStatus = "pending" | "approved" | "rejected";
+export type TaskAssignmentRequestStatus = "pending" | "approved" | "rejected";
+export type TaskDoneRequestStatus = "pending" | "approved" | "rejected";
+
+export interface TaskAssignee {
+  id: string;
+  name: string;
+  email?: string | null;
+  avatarUrl?: string | null;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  summary?: string | null;
+  status: TaskStatus;
+  priority: TaskPriority;
+  approvalStatus: TaskApprovalStatus;
+  dueDate: string | null;
+  project?: string | null;
+  notes?: string | null;
+  tags: string[];
+  href?: string | null;
+  createdBy?: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  rejectedBy?: string | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  assignees: TaskAssignee[];
+}
+
+export interface TaskAssignmentRequest {
+  id: string;
+  taskId: string;
+  userId: string;
+  requestedBy: string;
+  status: TaskAssignmentRequestStatus;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  rejectionReason?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskAssignmentRequestDetail extends TaskAssignmentRequest {
+  taskTitle: string;
+  taskApprovalStatus: TaskApprovalStatus;
+  assigneeName?: string | null;
+  assigneeEmail?: string | null;
+  requesterName?: string | null;
+  requesterEmail?: string | null;
+}
+
+export interface TaskDoneRequest {
+  id: string;
+  taskId: string;
+  requestedBy: string;
+  status: TaskDoneRequestStatus;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  rejectionReason?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskDoneRequestDetail extends TaskDoneRequest {
+  taskTitle: string;
+  requesterName?: string | null;
+  requesterEmail?: string | null;
+}
+
 export interface ResumeTemplate {
   id: string;
   name: string;

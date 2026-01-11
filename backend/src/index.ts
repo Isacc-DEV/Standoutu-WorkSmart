@@ -25,6 +25,7 @@ import { registerScraperApiRoutes } from "./scraper/api";
 import { startScraperService } from "./scraper/service";
 import {
   addMessageReaction,
+  addTaskAssignee,
   bulkAddReadReceipts,
   closeAssignmentById,
   listAcceptedCountsByDate,
@@ -97,6 +98,11 @@ import {
   listPinnedMessages,
   listProfiles,
   listProfilesForBidder,
+  listTasks,
+  listPendingTasks,
+  listTasksForUser,
+  listTaskAssignmentRequests,
+  listTaskDoneRequests,
   listUserPresences,
   markThreadAsRead,
   markNotificationsRead,
@@ -108,10 +114,24 @@ import {
   updateDailyReportStatus,
   updateLabelAliasRecord,
   updateProfileRecord,
+  updateTask,
+  updateTaskNotes,
+  updateTaskStatus,
   updateUserAvatar,
   updateUserPresence,
+  approveTask,
+  approveTaskDoneRequest,
+  rejectTask,
+  rejectTaskDoneRequest,
+  upsertTaskAssignmentRequests,
+  approveTaskAssignmentRequest,
+  rejectTaskAssignmentRequest,
+  insertTaskDoneRequest,
   insertDailyReportAttachments,
   upsertDailyReport,
+  insertTask,
+  deleteTask,
+  findTaskById,
 } from "./db";
 import {
   CANONICAL_LABEL_KEYS,
@@ -2073,6 +2093,587 @@ async function bootstrap() {
         await browser.close().catch(() => undefined);
       }
     }
+  });
+
+  app.get("/tasks", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.isActive === false) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    if (actor.role === "OBSERVER") {
+      return reply.status(403).send({ message: "Observers cannot view tasks" });
+    }
+    return listTasks();
+  });
+
+  app.post("/tasks", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can create tasks" });
+    }
+    const isAdmin = actor.role === "ADMIN";
+    const schema = z.object({
+      title: z.string(),
+      summary: z.string().optional().nullable(),
+      status: z.enum(["todo", "in_progress", "in_review", "done"]),
+      priority: z.enum(["low", "medium", "high", "urgent"]),
+      dueDate: z.string().optional().nullable(),
+      project: z.string().optional().nullable(),
+      notes: z.string().optional().nullable(),
+      tags: z.array(z.string()).optional(),
+      href: z.string().optional().nullable(),
+      assigneeIds: z.array(z.string().uuid()).optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+    const title = trimString(body.title);
+    if (!title) {
+      return reply.status(400).send({ message: "Task title is required" });
+    }
+    const dueDate = trimToNull(body.dueDate ?? null);
+    if (dueDate && !isValidDateString(dueDate)) {
+      return reply.status(400).send({ message: "Invalid due date" });
+    }
+    const tags = (body.tags ?? []).map(trimString).filter(Boolean);
+    const assigneeIds = body.assigneeIds ?? [];
+    const status =
+      body.status === "todo" && assigneeIds.length > 0 ? "in_progress" : body.status;
+    const approvalStatus = isAdmin ? "approved" : "pending";
+    const now = new Date().toISOString();
+    const created = await insertTask({
+      id: randomUUID(),
+      title,
+      summary: trimToNull(body.summary ?? null),
+      status,
+      priority: body.priority,
+      approvalStatus,
+      dueDate,
+      project: trimToNull(body.project ?? null),
+      notes: trimToNull(body.notes ?? null),
+      tags,
+      href: trimToNull(body.href ?? null),
+      createdBy: actor.id,
+      approvedBy: isAdmin ? actor.id : null,
+      approvedAt: isAdmin ? now : null,
+      assigneeIds: isAdmin ? assigneeIds : [],
+    });
+    if (!isAdmin && assigneeIds.length) {
+      await upsertTaskAssignmentRequests(created.id, assigneeIds, actor.id);
+    }
+    if (isAdmin && assigneeIds.length) {
+      await notifyUsers(assigneeIds, {
+        kind: "system",
+        message: `You were assigned to "${created.title}".`,
+        href: "/tasks",
+      });
+    }
+    if (!isAdmin) {
+      await notifyAdmins({
+        kind: "system",
+        message: `Task request from ${actor.name}: ${created.title}`,
+        href: "/admin/tasks",
+      });
+    }
+    return created;
+  });
+
+  app.patch("/tasks/:id", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can update tasks" });
+    }
+    const { id } = request.params as { id: string };
+    const existing = await findTaskById(id);
+    if (!existing) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    const schema = z.object({
+      title: z.string().optional(),
+      summary: z.string().optional().nullable(),
+      status: z.enum(["todo", "in_progress", "in_review", "done"]).optional(),
+      priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+      dueDate: z.string().optional().nullable(),
+      project: z.string().optional().nullable(),
+      notes: z.string().optional().nullable(),
+      tags: z.array(z.string()).optional(),
+      href: z.string().optional().nullable(),
+      assigneeIds: z.array(z.string().uuid()).optional(),
+    });
+    const body = schema.parse(request.body ?? {});
+    if (body.assigneeIds !== undefined && actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can update task assignees" });
+    }
+    const dueDate =
+      body.dueDate !== undefined
+        ? trimToNull(body.dueDate ?? null)
+        : existing.dueDate;
+    if (body.dueDate !== undefined && dueDate && !isValidDateString(dueDate)) {
+      return reply.status(400).send({ message: "Invalid due date" });
+    }
+    const title =
+      body.title !== undefined ? trimString(body.title) : existing.title;
+    if (!title) {
+      return reply.status(400).send({ message: "Task title is required" });
+    }
+    const tags =
+      body.tags !== undefined
+        ? body.tags.map(trimString).filter(Boolean)
+        : existing.tags ?? [];
+    const assigneeIds =
+      body.assigneeIds !== undefined
+        ? body.assigneeIds
+        : existing.assignees.map((assignee) => assignee.id);
+    const status =
+      body.status ??
+      (body.assigneeIds !== undefined &&
+      existing.status === "todo" &&
+      assigneeIds.length > 0
+        ? "in_progress"
+        : existing.status);
+    const updated = await updateTask({
+      id,
+      title,
+      summary:
+        body.summary !== undefined
+          ? trimToNull(body.summary ?? null)
+          : existing.summary ?? null,
+      status,
+      priority: body.priority ?? existing.priority,
+      dueDate,
+      project:
+        body.project !== undefined
+          ? trimToNull(body.project ?? null)
+          : existing.project ?? null,
+      notes:
+        body.notes !== undefined
+          ? trimToNull(body.notes ?? null)
+          : existing.notes ?? null,
+      tags,
+      href:
+        body.href !== undefined
+          ? trimToNull(body.href ?? null)
+          : existing.href ?? null,
+      assigneeIds,
+    });
+    return updated;
+  });
+
+  app.patch("/tasks/:id/notes", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.isActive === false) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const { id } = request.params as { id: string };
+    const existing = await findTaskById(id);
+    if (!existing) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    const isAssignee = existing.assignees.some((assignee) => assignee.id === actor.id);
+    if (!isAssignee) {
+      return reply
+        .status(403)
+        .send({ message: "Only assigned users can add notes" });
+    }
+    const schema = z.object({
+      note: z.string().optional().nullable(),
+      notes: z.string().optional().nullable(),
+    });
+    const body = schema.parse(request.body ?? {});
+    const incoming = trimString(body.note ?? body.notes ?? "");
+    if (!incoming) {
+      return reply.status(400).send({ message: "Note is required" });
+    }
+    const sanitized = incoming.replace(/\s+/g, " ").trim();
+    if (!sanitized) {
+      return reply.status(400).send({ message: "Note is required" });
+    }
+    const stamp = new Date().toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    const entry = `- ${stamp} - ${actor.name}: ${sanitized}`;
+    const existingNotes = existing.notes?.trim();
+    const nextNotes = existingNotes ? `${existingNotes}\n${entry}` : entry;
+    const updated = await updateTaskNotes(id, nextNotes);
+    return updated;
+  });
+
+  app.get("/tasks/requests", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can view task requests" });
+    }
+    return listPendingTasks();
+  });
+
+  app.post("/tasks/:id/approve", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can approve tasks" });
+    }
+    const { id } = request.params as { id: string };
+    const existing = await findTaskById(id);
+    if (!existing) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    const updated = await approveTask(id, actor.id);
+    if (updated?.createdBy) {
+      await notifyUsers([updated.createdBy], {
+        kind: "system",
+        message: `Task approved: ${updated.title}`,
+        href: "/tasks",
+      });
+    }
+    return updated;
+  });
+
+  app.post("/tasks/:id/reject", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can reject tasks" });
+    }
+    const { id } = request.params as { id: string };
+    const existing = await findTaskById(id);
+    if (!existing) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    const schema = z.object({
+      reason: z.string().optional().nullable(),
+    });
+    const body = schema.parse(request.body ?? {});
+    const updated = await rejectTask(id, actor.id, trimToNull(body.reason ?? null));
+    if (updated?.createdBy) {
+      const reasonText = updated.rejectionReason
+        ? ` Reason: ${updated.rejectionReason}`
+        : "";
+      await notifyUsers([updated.createdBy], {
+        kind: "system",
+        message: `Task rejected: ${updated.title}.${reasonText}`,
+        href: "/tasks",
+      });
+    }
+    return updated;
+  });
+
+  app.post("/tasks/:id/assign-requests", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.role !== "MANAGER") {
+      return reply
+        .status(403)
+        .send({ message: "Only managers can request assignments" });
+    }
+    const { id } = request.params as { id: string };
+    const existing = await findTaskById(id);
+    if (!existing) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    if (existing.createdBy !== actor.id) {
+      return reply
+        .status(403)
+        .send({ message: "You can only request assignments for your tasks" });
+    }
+    if (existing.approvalStatus === "rejected") {
+      return reply
+        .status(400)
+        .send({ message: "Rejected tasks cannot accept assignments" });
+    }
+    const schema = z.object({
+      assigneeIds: z.array(z.string().uuid()).min(1),
+    });
+    const body = schema.parse(request.body ?? {});
+    const assignedIds = new Set(existing.assignees.map((assignee) => assignee.id));
+    const requestIds = body.assigneeIds.filter((assigneeId) => !assignedIds.has(assigneeId));
+    if (!requestIds.length) {
+      return reply.status(400).send({ message: "All users are already assigned" });
+    }
+    await upsertTaskAssignmentRequests(id, requestIds, actor.id);
+    await notifyAdmins({
+      kind: "system",
+      message: `Assignment request for "${existing.title}" (${requestIds.length} user${requestIds.length === 1 ? "" : "s"})`,
+      href: "/admin/tasks",
+    });
+    return { success: true };
+  });
+
+  app.get("/tasks/assign-requests", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can view assignment requests" });
+    }
+    const parsed = z
+      .object({
+        status: z.enum(["pending", "approved", "rejected"]).optional(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    return listTaskAssignmentRequests(parsed.data.status ?? "pending");
+  });
+
+  app.post("/tasks/:id/done-requests", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.isActive === false) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const { id } = request.params as { id: string };
+    const task = await findTaskById(id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    const isAssignee = task.assignees.some((assignee) => assignee.id === actor.id);
+    if (!isAssignee) {
+      return reply
+        .status(403)
+        .send({ message: "Only assigned users can request completion" });
+    }
+    if (task.status === "done") {
+      return reply.status(400).send({ message: "Task already done" });
+    }
+    const { rows } = await pool.query<{ id: string }>(
+      `
+        SELECT id FROM task_done_requests
+        WHERE task_id = $1 AND requested_by = $2 AND status = 'pending'
+        LIMIT 1
+      `,
+      [id, actor.id],
+    );
+    if (rows.length > 0) {
+      return reply.status(409).send({ message: "Completion already requested" });
+    }
+    const created = await insertTaskDoneRequest({
+      id: randomUUID(),
+      taskId: id,
+      requestedBy: actor.id,
+    });
+    await updateTaskStatus(id, "in_review");
+    await notifyAdmins({
+      kind: "system",
+      message: `Task done request from ${actor.name}: ${task.title}`,
+      href: "/admin/tasks",
+    });
+    return created;
+  });
+
+  app.get("/tasks/done-requests", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can view done requests" });
+    }
+    const schema = z.object({
+      status: z.enum(["pending", "approved", "rejected"]).optional(),
+    });
+    const parsed = schema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: "Invalid query" });
+    }
+    return listTaskDoneRequests(parsed.data.status ?? "pending");
+  });
+
+  app.post("/tasks/done-requests/:id/approve", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can approve done requests" });
+    }
+    const { id } = request.params as { id: string };
+    const approved = await approveTaskDoneRequest(id, actor.id);
+    if (!approved) {
+      return reply.status(404).send({ message: "Done request not found" });
+    }
+    await notifyUsers([approved.requestedBy], {
+      kind: "system",
+      message: `Task marked done: ${approved.taskTitle}`,
+      href: "/tasks",
+    });
+    return approved;
+  });
+
+  app.post("/tasks/done-requests/:id/reject", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can reject done requests" });
+    }
+    const { id } = request.params as { id: string };
+    const schema = z.object({
+      reason: z.string().optional().nullable(),
+    });
+    const body = schema.parse(request.body ?? {});
+    const rejected = await rejectTaskDoneRequest(id, actor.id, body.reason ?? null);
+    if (!rejected) {
+      return reply.status(404).send({ message: "Done request not found" });
+    }
+    await notifyUsers([rejected.requestedBy], {
+      kind: "system",
+      message: `Task done request rejected: ${rejected.taskTitle}`,
+      href: "/tasks",
+    });
+    return rejected;
+  });
+
+  app.post("/tasks/assign-requests/:id/approve", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can approve assignment requests" });
+    }
+    const { id } = request.params as { id: string };
+    const approved = await approveTaskAssignmentRequest(id, actor.id);
+    if (!approved) {
+      return reply.status(404).send({ message: "Assignment request not found" });
+    }
+    const task = await findTaskById(approved.taskId);
+    const title = task?.title ?? "task";
+    if (approved.requestedBy) {
+      await notifyUsers([approved.requestedBy], {
+        kind: "system",
+        message: `Assignment approved for "${title}".`,
+        href: "/tasks",
+      });
+    }
+    await notifyUsers([approved.userId], {
+      kind: "system",
+      message: `You were assigned to "${title}".`,
+      href: "/tasks",
+    });
+    return { success: true };
+  });
+
+  app.post("/tasks/assign-requests/:id/reject", async (request, reply) => {
+    const actor = request.authUser;
+    if (!actor || actor.role !== "ADMIN") {
+      return reply
+        .status(403)
+        .send({ message: "Only admins can reject assignment requests" });
+    }
+    const { id } = request.params as { id: string };
+    const schema = z.object({
+      reason: z.string().optional().nullable(),
+    });
+    const body = schema.parse(request.body ?? {});
+    const reason = trimToNull(body.reason ?? null);
+    const rejected = await rejectTaskAssignmentRequest(
+      id,
+      actor.id,
+      reason,
+    );
+    if (!rejected) {
+      return reply.status(404).send({ message: "Assignment request not found" });
+    }
+    const task = await findTaskById(rejected.taskId);
+    const title = task?.title ?? "task";
+    if (rejected.requestedBy) {
+      const reasonText = reason ? ` Reason: ${reason}` : "";
+      await notifyUsers([rejected.requestedBy], {
+        kind: "system",
+        message: `Assignment rejected for "${title}".${reasonText}`,
+        href: "/tasks",
+      });
+    }
+    return { success: true };
+  });
+
+  app.post("/tasks/:id/assign-self-request", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.isActive === false) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const { id } = request.params as { id: string };
+    const task = await findTaskById(id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    if (task.status !== "todo") {
+      return reply.status(400).send({ message: "Assignment requests are only for to-do tasks" });
+    }
+    const isAssigned = task.assignees.some((assignee) => assignee.id === actor.id);
+    if (isAssigned) {
+      return reply.status(409).send({ message: "You are already assigned" });
+    }
+    const { rows } = await pool.query<{ id: string }>(
+      `
+        SELECT id FROM task_assignment_requests
+        WHERE task_id = $1 AND user_id = $2 AND status = 'pending'
+        LIMIT 1
+      `,
+      [id, actor.id],
+    );
+    if (rows.length > 0) {
+      return reply.status(409).send({ message: "Assignment already requested" });
+    }
+    await upsertTaskAssignmentRequests(id, [actor.id], actor.id);
+    await notifyAdmins({
+      kind: "system",
+      message: `Assignment request from ${actor.name}: ${task.title}`,
+      href: "/admin/tasks",
+    });
+    return { success: true };
+  });
+
+  app.post("/tasks/:id/assign-self", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || actor.isActive === false) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const { id } = request.params as { id: string };
+    const task = await findTaskById(id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    if (task.status !== "in_progress") {
+      return reply.status(400).send({ message: "Assign-to-me is only available in progress" });
+    }
+    const isAssigned = task.assignees.some((assignee) => assignee.id === actor.id);
+    if (isAssigned) {
+      return reply.status(409).send({ message: "You are already assigned" });
+    }
+    await addTaskAssignee(id, actor.id);
+    return findTaskById(id);
+  });
+
+  app.delete("/tasks/:id", async (request, reply) => {
+    if (forbidObserver(reply, request.authUser)) return;
+    const actor = request.authUser;
+    if (!actor || (actor.role !== "MANAGER" && actor.role !== "ADMIN")) {
+      return reply
+        .status(403)
+        .send({ message: "Only managers or admins can delete tasks" });
+    }
+    const { id } = request.params as { id: string };
+    const deleted = await deleteTask(id);
+    if (!deleted) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    return { success: true };
   });
 
   app.get("/calendar/accounts", async (request, reply) => {

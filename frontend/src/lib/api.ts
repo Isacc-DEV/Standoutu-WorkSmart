@@ -2,6 +2,20 @@ import { readAuth } from './auth';
 
 const LOCAL_API_PORT = 4000;
 
+export class ApiNetworkError extends Error {
+  constructor(url: string, message: string) {
+    super(`Network error contacting API (${url}): ${message}`);
+    this.name = 'ApiNetworkError';
+  }
+}
+
+export function isApiNetworkError(error: unknown): boolean {
+  if (error instanceof ApiNetworkError) return true;
+  if (!error || typeof error !== 'object') return false;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' && message.startsWith('Network error contacting API');
+}
+
 function resolveApiBase(): string {
   const envBase = (process.env.NEXT_PUBLIC_API_BASE || '').trim();
   if (envBase) {
@@ -69,7 +83,7 @@ export async function api<T = unknown>(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Network error contacting API (${url}): ${message}`);
+    throw new ApiNetworkError(url, message);
   }
 
   if (!res.ok) {

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { clearAuth } from '../lib/auth';
-import { api } from '../lib/api';
+import { api, API_BASE } from '../lib/api';
 import { getReportsLastSeen, subscribeNotificationRefresh, triggerNotificationRefresh } from '../lib/notifications';
 import { useAuth } from '../lib/useAuth';
 
@@ -28,6 +28,7 @@ const emptyNotifications = {
   workspace: 0,
   community: 0,
   calendar: 0,
+  tasks: 0,
   reports: 0,
   system: 0,
   about: 0,
@@ -55,6 +56,27 @@ function formatRelativeTime(value: string) {
   if (diffHours < 24) return `${diffHours}h ago`;
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays}d ago`;
+}
+
+function buildApiUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+  if (!base) return path;
+  return new URL(path, base).toString();
+}
+
+async function safeFetchJson<T>(path: string, token?: string | null): Promise<T | null> {
+  const url = buildApiUrl(path);
+  try {
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
 }
 
 function NotificationBadge({
@@ -182,32 +204,27 @@ export default function TopNav() {
         const reportUrl = reportSince
           ? `/notifications/summary?since=${encodeURIComponent(reportSince)}`
           : '/notifications/summary';
-        const [communityResult, reportResult] = await Promise.allSettled([
-          api<{ unreads?: { threadId: string; unreadCount: number }[] }>(
+        const [communityData, reportData] = await Promise.all([
+          safeFetchJson<{ unreads?: { threadId: string; unreadCount: number }[] }>(
             '/community/unread-summary',
-            undefined,
             token,
           ),
-          api<{ reportCount?: number; systemCount?: number }>(reportUrl, undefined, token),
+          safeFetchJson<{ reportCount?: number; systemCount?: number }>(reportUrl, token),
         ]);
         let communityTotal: number | null = null;
-        if (communityResult.status === 'fulfilled') {
-          communityTotal = (communityResult.value?.unreads ?? []).reduce(
+        if (communityData) {
+          communityTotal = (communityData.unreads ?? []).reduce(
             (sum, info) => sum + (typeof info.unreadCount === 'number' ? info.unreadCount : 0),
             0,
           );
-        } else {
-          console.error(communityResult.reason);
         }
         let reportCount: number | null = null;
         let systemCount: number | null = null;
-        if (reportResult.status === 'fulfilled') {
+        if (reportData) {
           reportCount =
-            typeof reportResult.value?.reportCount === 'number' ? reportResult.value.reportCount : 0;
+            typeof reportData.reportCount === 'number' ? reportData.reportCount : 0;
           systemCount =
-            typeof reportResult.value?.systemCount === 'number' ? reportResult.value.systemCount : 0;
-        } else {
-          console.error(reportResult.reason);
+            typeof reportData.systemCount === 'number' ? reportData.systemCount : 0;
         }
         if (!active) return;
         setNavNotifications((prev) => ({
@@ -274,6 +291,12 @@ export default function TopNav() {
             label="Calendar"
             active={pathname.startsWith('/calendar')}
             notificationCount={navNotifications.calendar}
+          />
+          <NavItem
+            href="/tasks"
+            label="Tasks"
+            active={pathname.startsWith('/tasks')}
+            notificationCount={navNotifications.tasks}
           />
           <NavItem
             href={reportsHref}

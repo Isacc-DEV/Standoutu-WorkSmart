@@ -19,6 +19,13 @@ import {
   Profile,
   ProfileAccount,
   ProfileAccountWithProfile,
+  Task,
+  TaskApprovalStatus,
+  TaskAssignmentRequestDetail,
+  TaskAssignmentRequestStatus,
+  TaskAssignee,
+  TaskDoneRequestDetail,
+  TaskDoneRequestStatus,
   ReactionSummary,
   ResumeTemplate,
   UnreadInfo,
@@ -233,6 +240,62 @@ export async function initDb() {
         created_at TIMESTAMP DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS tasks (
+        id UUID PRIMARY KEY,
+        title TEXT NOT NULL,
+        summary TEXT,
+        status TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        approval_status TEXT NOT NULL DEFAULT 'approved',
+        due_date DATE,
+        project TEXT,
+        notes TEXT,
+        tags TEXT[] DEFAULT ARRAY[]::text[],
+        href TEXT,
+        created_by UUID REFERENCES users(id),
+        approved_by UUID REFERENCES users(id),
+        approved_at TIMESTAMP,
+        rejected_by UUID REFERENCES users(id),
+        rejected_at TIMESTAMP,
+        rejection_reason TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS task_assignees (
+        id UUID PRIMARY KEY,
+        task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        assigned_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (task_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS task_assignment_requests (
+        id UUID PRIMARY KEY,
+        task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        requested_by UUID REFERENCES users(id),
+        status TEXT NOT NULL,
+        reviewed_by UUID REFERENCES users(id),
+        reviewed_at TIMESTAMP,
+        rejection_reason TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (task_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS task_done_requests (
+        id UUID PRIMARY KEY,
+        task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+        requested_by UUID REFERENCES users(id),
+        status TEXT NOT NULL,
+        reviewed_by UUID REFERENCES users(id),
+        reviewed_at TIMESTAMP,
+        rejection_reason TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS events (
         id UUID PRIMARY KEY,
         session_id UUID,
@@ -413,6 +476,13 @@ export async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_profile_accounts_profile ON profile_accounts(profile_id);
       CREATE INDEX IF NOT EXISTS idx_applications_bidder ON applications(bidder_user_id);
       CREATE INDEX IF NOT EXISTS idx_applications_profile ON applications(profile_id);
+      CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);
+      CREATE INDEX IF NOT EXISTS idx_task_assignees_task ON task_assignees(task_id);
+      CREATE INDEX IF NOT EXISTS idx_task_assignees_user ON task_assignees(user_id);
+      CREATE INDEX IF NOT EXISTS idx_task_assignment_requests_status ON task_assignment_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_task_assignment_requests_task ON task_assignment_requests(task_id);
+      CREATE INDEX IF NOT EXISTS idx_task_done_requests_status ON task_done_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_task_done_requests_task ON task_done_requests(task_id);
       CREATE INDEX IF NOT EXISTS idx_resume_templates_updated ON resume_templates(updated_at);
       CREATE INDEX IF NOT EXISTS idx_resume_templates_name ON resume_templates(name);
       CREATE INDEX IF NOT EXISTS idx_community_members_thread ON community_thread_members(thread_id);
@@ -498,11 +568,30 @@ export async function initDb() {
       ALTER TABLE IF EXISTS profiles
         ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP;
 
+      ALTER TABLE IF EXISTS tasks
+        ALTER COLUMN due_date DROP NOT NULL;
+
       DROP TABLE IF EXISTS assignments;
     `);
 
     await client.query(
       "ALTER TABLE IF EXISTS daily_reports ADD COLUMN IF NOT EXISTS review_reason TEXT;",
+    );
+
+    await client.query(
+      `
+        ALTER TABLE IF EXISTS tasks
+          ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'approved',
+          ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id),
+          ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP,
+          ADD COLUMN IF NOT EXISTS rejected_by UUID REFERENCES users(id),
+          ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMP,
+          ADD COLUMN IF NOT EXISTS rejection_reason TEXT
+      `,
+    );
+
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS idx_tasks_approval_status ON tasks(approval_status);",
     );
 
     await client.query(
@@ -1747,6 +1836,601 @@ export async function deleteResumeTemplate(id: string): Promise<boolean> {
     [id],
   );
   return (rowCount ?? 0) > 0;
+}
+
+type TaskRow = Omit<Task, "tags" | "assignees"> & {
+  tags?: string[] | null;
+  assignees?: TaskAssignee[] | null;
+  approvalStatus?: TaskApprovalStatus | null;
+};
+
+function normalizeTaskRow(row: TaskRow): Task {
+  return {
+    ...row,
+    approvalStatus: row.approvalStatus ?? "approved",
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    assignees: Array.isArray(row.assignees) ? row.assignees : [],
+  };
+}
+
+async function listTasksByQuery(
+  clause: string,
+  params: Array<string | number> = [],
+): Promise<Task[]> {
+  const { rows } = await pool.query<TaskRow>(
+    `
+      SELECT
+        t.id,
+        t.title,
+        t.summary,
+        t.status,
+        t.priority,
+        t.approval_status AS "approvalStatus",
+        t.due_date::text AS "dueDate",
+        t.project,
+        t.notes,
+        t.tags,
+        t.href,
+        t.created_by AS "createdBy",
+        t.approved_by AS "approvedBy",
+        t.approved_at AS "approvedAt",
+        t.rejected_by AS "rejectedBy",
+        t.rejected_at AS "rejectedAt",
+        t.rejection_reason AS "rejectionReason",
+        t.created_at AS "createdAt",
+        t.updated_at AS "updatedAt",
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', u.id,
+              'name', u.name,
+              'email', u.email,
+              'avatarUrl', u.avatar_url
+            )
+          ) FILTER (WHERE u.id IS NOT NULL),
+          '[]'::json
+        ) AS assignees
+      FROM tasks t
+      LEFT JOIN task_assignees ta ON ta.task_id = t.id
+      LEFT JOIN users u ON u.id = ta.user_id
+      ${clause}
+      GROUP BY t.id
+      ORDER BY t.due_date ASC, t.created_at DESC
+    `,
+    params,
+  );
+  return rows.map(normalizeTaskRow);
+}
+
+export async function listTasks(): Promise<Task[]> {
+  return listTasksByQuery('');
+}
+
+export async function listTasksForUser(userId: string): Promise<Task[]> {
+  return listTasksByQuery(
+    `WHERE t.approval_status = 'approved'
+       AND t.id IN (SELECT task_id FROM task_assignees WHERE user_id = $1)`,
+    [userId],
+  );
+}
+
+export async function findTaskById(id: string): Promise<Task | undefined> {
+  const rows = await listTasksByQuery('WHERE t.id = $1', [id]);
+  return rows[0];
+}
+
+export async function setTaskAssignees(taskId: string, userIds: string[]) {
+  const cleaned = Array.from(
+    new Set(userIds.map((id) => id.trim()).filter(Boolean)),
+  );
+  await pool.query('DELETE FROM task_assignees WHERE task_id = $1', [taskId]);
+  if (cleaned.length === 0) return;
+  const values = cleaned
+    .map((_, index) => `($${index * 3 + 1}, $${index * 3 + 2}, $${index * 3 + 3})`)
+    .join(', ');
+  const params = cleaned.flatMap((userId) => [randomUUID(), taskId, userId]);
+  await pool.query(
+    `INSERT INTO task_assignees (id, task_id, user_id) VALUES ${values}`,
+    params,
+  );
+}
+
+export async function insertTask(task: {
+  id: string;
+  title: string;
+  summary?: string | null;
+  status: Task["status"];
+  priority: Task["priority"];
+  approvalStatus?: TaskApprovalStatus;
+  dueDate: string | null;
+  project?: string | null;
+  notes?: string | null;
+  tags?: string[];
+  href?: string | null;
+  createdBy?: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  rejectedBy?: string | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
+  assigneeIds?: string[];
+}): Promise<Task> {
+  const createdAt = new Date().toISOString();
+  const updatedAt = createdAt;
+  await pool.query(
+    `
+      INSERT INTO tasks (
+        id,
+        title,
+        summary,
+        status,
+        priority,
+        approval_status,
+        due_date,
+        project,
+        notes,
+        tags,
+        href,
+        created_by,
+        approved_by,
+        approved_at,
+        rejected_by,
+        rejected_at,
+        rejection_reason,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+    `,
+    [
+      task.id,
+      task.title,
+      task.summary ?? null,
+      task.status,
+      task.priority,
+      task.approvalStatus ?? "approved",
+      task.dueDate,
+      task.project ?? null,
+      task.notes ?? null,
+      task.tags ?? [],
+      task.href ?? null,
+      task.createdBy ?? null,
+      task.approvedBy ?? null,
+      task.approvedAt ?? null,
+      task.rejectedBy ?? null,
+      task.rejectedAt ?? null,
+      task.rejectionReason ?? null,
+      createdAt,
+      updatedAt,
+    ],
+  );
+  await setTaskAssignees(task.id, task.assigneeIds ?? []);
+  const created = await findTaskById(task.id);
+  if (!created) {
+    throw new Error('Task insert failed');
+  }
+  return created;
+}
+
+export async function updateTask(task: {
+  id: string;
+  title: string;
+  summary?: string | null;
+  status: Task["status"];
+  priority: Task["priority"];
+  dueDate: string | null;
+  project?: string | null;
+  notes?: string | null;
+  tags?: string[];
+  href?: string | null;
+  assigneeIds?: string[];
+}): Promise<Task | undefined> {
+  const { rowCount } = await pool.query(
+    `
+      UPDATE tasks
+      SET title = $2,
+          summary = $3,
+          status = $4,
+          priority = $5,
+          due_date = $6,
+          project = $7,
+          notes = $8,
+          tags = $9,
+          href = $10,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [
+      task.id,
+      task.title,
+      task.summary ?? null,
+      task.status,
+      task.priority,
+      task.dueDate,
+      task.project ?? null,
+      task.notes ?? null,
+      task.tags ?? [],
+      task.href ?? null,
+    ],
+  );
+  if (!rowCount) return undefined;
+  await setTaskAssignees(task.id, task.assigneeIds ?? []);
+  return findTaskById(task.id);
+}
+
+export async function updateTaskNotes(
+  taskId: string,
+  notes: string | null,
+): Promise<Task | undefined> {
+  const { rowCount } = await pool.query(
+    `
+      UPDATE tasks
+      SET notes = $2,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [taskId, notes ?? null],
+  );
+  if (!rowCount) return undefined;
+  return findTaskById(taskId);
+}
+
+export async function deleteTask(id: string): Promise<boolean> {
+  const { rowCount } = await pool.query('DELETE FROM tasks WHERE id = $1', [id]);
+  return (rowCount ?? 0) > 0;
+}
+
+export async function listPendingTasks(): Promise<Task[]> {
+  return listTasksByQuery("WHERE t.approval_status = 'pending'");
+}
+
+export async function approveTask(taskId: string, reviewerId: string) {
+  await pool.query(
+    `
+      UPDATE tasks
+      SET approval_status = 'approved',
+          approved_by = $2,
+          approved_at = NOW(),
+          rejected_by = NULL,
+          rejected_at = NULL,
+          rejection_reason = NULL,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [taskId, reviewerId],
+  );
+  return findTaskById(taskId);
+}
+
+export async function rejectTask(
+  taskId: string,
+  reviewerId: string,
+  reason?: string | null,
+) {
+  await pool.query(
+    `
+      UPDATE tasks
+      SET approval_status = 'rejected',
+          rejected_by = $2,
+          rejected_at = NOW(),
+          rejection_reason = $3,
+          approved_by = NULL,
+          approved_at = NULL,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [taskId, reviewerId, reason ?? null],
+  );
+  await pool.query(
+    `
+      UPDATE task_assignment_requests
+      SET status = 'rejected',
+          reviewed_by = $2,
+          reviewed_at = NOW(),
+          rejection_reason = COALESCE(rejection_reason, $3),
+          updated_at = NOW()
+      WHERE task_id = $1 AND status = 'pending'
+    `,
+    [taskId, reviewerId, reason ?? 'Task rejected'],
+  );
+  return findTaskById(taskId);
+}
+
+export async function addTaskAssignee(taskId: string, userId: string) {
+  await pool.query(
+    `
+      INSERT INTO task_assignees (id, task_id, user_id)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (task_id, user_id) DO NOTHING
+    `,
+    [randomUUID(), taskId, userId],
+  );
+}
+
+export async function updateTaskStatus(taskId: string, status: Task["status"]) {
+  await pool.query(
+    `
+      UPDATE tasks
+      SET status = $2,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [taskId, status],
+  );
+}
+
+export async function upsertTaskAssignmentRequests(
+  taskId: string,
+  userIds: string[],
+  requestedBy: string,
+) {
+  const cleaned = Array.from(
+    new Set(userIds.map((id) => id.trim()).filter(Boolean)),
+  );
+  if (!cleaned.length) return;
+  const values = cleaned
+    .map(
+      (_, index) =>
+        `($${index * 4 + 1}, $${index * 4 + 2}, $${index * 4 + 3}, $${index * 4 + 4}, 'pending')`,
+    )
+    .join(', ');
+  const params = cleaned.flatMap((userId) => [
+    randomUUID(),
+    taskId,
+    userId,
+    requestedBy,
+  ]);
+  await pool.query(
+    `
+      INSERT INTO task_assignment_requests (id, task_id, user_id, requested_by, status)
+      VALUES ${values}
+      ON CONFLICT (task_id, user_id)
+      DO UPDATE SET
+        status = 'pending',
+        requested_by = EXCLUDED.requested_by,
+        reviewed_by = NULL,
+        reviewed_at = NULL,
+        rejection_reason = NULL,
+        updated_at = NOW()
+    `,
+    params,
+  );
+}
+
+export async function listTaskAssignmentRequests(
+  status?: TaskAssignmentRequestStatus,
+): Promise<TaskAssignmentRequestDetail[]> {
+  const params: Array<string | number> = [];
+  let where = '';
+  if (status) {
+    params.push(status);
+    where = 'WHERE tar.status = $1';
+  }
+  const { rows } = await pool.query<TaskAssignmentRequestDetail>(
+    `
+      SELECT
+        tar.id,
+        tar.task_id AS "taskId",
+        tar.user_id AS "userId",
+        tar.requested_by AS "requestedBy",
+        tar.status,
+        tar.reviewed_by AS "reviewedBy",
+        tar.reviewed_at AS "reviewedAt",
+        tar.rejection_reason AS "rejectionReason",
+        tar.created_at AS "createdAt",
+        tar.updated_at AS "updatedAt",
+        t.title AS "taskTitle",
+        t.approval_status AS "taskApprovalStatus",
+        u.name AS "assigneeName",
+        u.email AS "assigneeEmail",
+        r.name AS "requesterName",
+        r.email AS "requesterEmail"
+      FROM task_assignment_requests tar
+      JOIN tasks t ON t.id = tar.task_id
+      LEFT JOIN users u ON u.id = tar.user_id
+      LEFT JOIN users r ON r.id = tar.requested_by
+      ${where}
+      ORDER BY tar.created_at DESC
+    `,
+    params,
+  );
+  return rows;
+}
+
+type TaskDoneRequestRow = TaskDoneRequestDetail;
+
+async function listTaskDoneRequestsByQuery(
+  clause: string,
+  params: Array<string | number> = [],
+): Promise<TaskDoneRequestDetail[]> {
+  const { rows } = await pool.query<TaskDoneRequestRow>(
+    `
+      SELECT
+        r.id,
+        r.task_id AS "taskId",
+        r.requested_by AS "requestedBy",
+        r.status,
+        r.reviewed_by AS "reviewedBy",
+        r.reviewed_at AS "reviewedAt",
+        r.rejection_reason AS "rejectionReason",
+        r.created_at AS "createdAt",
+        r.updated_at AS "updatedAt",
+        t.title AS "taskTitle",
+        requester.name AS "requesterName",
+        requester.email AS "requesterEmail"
+      FROM task_done_requests r
+      JOIN tasks t ON t.id = r.task_id
+      LEFT JOIN users requester ON requester.id = r.requested_by
+      ${clause}
+      ORDER BY r.created_at DESC
+    `,
+    params,
+  );
+  return rows;
+}
+
+export async function listTaskDoneRequests(
+  status?: TaskDoneRequestStatus,
+): Promise<TaskDoneRequestDetail[]> {
+  if (!status) {
+    return listTaskDoneRequestsByQuery('');
+  }
+  return listTaskDoneRequestsByQuery('WHERE r.status = $1', [status]);
+}
+
+export async function findTaskDoneRequestById(
+  id: string,
+): Promise<TaskDoneRequestDetail | undefined> {
+  const rows = await listTaskDoneRequestsByQuery('WHERE r.id = $1', [id]);
+  return rows[0];
+}
+
+export async function insertTaskDoneRequest(request: {
+  id: string;
+  taskId: string;
+  requestedBy: string;
+}): Promise<TaskDoneRequestDetail> {
+  await pool.query(
+    `
+      INSERT INTO task_done_requests (
+        id,
+        task_id,
+        requested_by,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, NOW(), NOW())
+    `,
+    [request.id, request.taskId, request.requestedBy, 'pending'],
+  );
+  const created = await findTaskDoneRequestById(request.id);
+  if (!created) {
+    throw new Error('Task done request insert failed');
+  }
+  return created;
+}
+
+export async function approveTaskDoneRequest(
+  requestId: string,
+  reviewerId: string,
+): Promise<TaskDoneRequestDetail | undefined> {
+  const existing = await findTaskDoneRequestById(requestId);
+  if (!existing) return undefined;
+  await pool.query(
+    `
+      UPDATE task_done_requests
+      SET status = 'approved',
+          reviewed_by = $2,
+          reviewed_at = NOW(),
+          rejection_reason = NULL,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [requestId, reviewerId],
+  );
+  await pool.query(
+    `
+      UPDATE tasks
+      SET status = 'done',
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [existing.taskId],
+  );
+  return findTaskDoneRequestById(requestId);
+}
+
+export async function rejectTaskDoneRequest(
+  requestId: string,
+  reviewerId: string,
+  reason?: string | null,
+): Promise<TaskDoneRequestDetail | undefined> {
+  const existing = await findTaskDoneRequestById(requestId);
+  if (!existing) return undefined;
+  await pool.query(
+    `
+      UPDATE task_done_requests
+      SET status = 'rejected',
+          reviewed_by = $2,
+          reviewed_at = NOW(),
+          rejection_reason = $3,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [requestId, reviewerId, reason ?? null],
+  );
+  await pool.query(
+    `
+      UPDATE tasks
+      SET status = 'in_progress',
+          updated_at = NOW()
+      WHERE id = $1 AND status = 'in_review'
+    `,
+    [existing.taskId],
+  );
+  return findTaskDoneRequestById(requestId);
+}
+
+export async function approveTaskAssignmentRequest(
+  requestId: string,
+  reviewerId: string,
+) {
+  const { rows } = await pool.query<{
+    taskId: string;
+    userId: string;
+    requestedBy: string;
+  }>(
+    `
+      UPDATE task_assignment_requests
+      SET status = 'approved',
+          reviewed_by = $2,
+          reviewed_at = NOW(),
+          rejection_reason = NULL,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING task_id AS "taskId", user_id AS "userId", requested_by AS "requestedBy"
+    `,
+    [requestId, reviewerId],
+  );
+  const request = rows[0];
+  if (!request) return undefined;
+  await addTaskAssignee(request.taskId, request.userId);
+  await pool.query(
+    `
+      UPDATE tasks
+      SET status = 'in_progress',
+          updated_at = NOW()
+      WHERE id = $1 AND status = 'todo'
+    `,
+    [request.taskId],
+  );
+  return request;
+}
+
+export async function rejectTaskAssignmentRequest(
+  requestId: string,
+  reviewerId: string,
+  reason?: string | null,
+) {
+  const { rows } = await pool.query<{
+    taskId: string;
+    userId: string;
+    requestedBy: string;
+  }>(
+    `
+      UPDATE task_assignment_requests
+      SET status = 'rejected',
+          reviewed_by = $2,
+          reviewed_at = NOW(),
+          rejection_reason = $3,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING task_id AS "taskId", user_id AS "userId", requested_by AS "requestedBy"
+    `,
+    [requestId, reviewerId, reason ?? null],
+  );
+  return rows[0];
 }
 
 
