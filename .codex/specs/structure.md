@@ -43,12 +43,14 @@
           - store.ts
         - seed/
           - data.json
+          - index.ts
           - run.ts
         - config.ts
         - db.ts
         - postgres.ts
         - run.ts
         - scrape.ts
+        - service.ts
         - types.ts
       - types/
         - mammoth.d.ts

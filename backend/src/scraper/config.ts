@@ -38,7 +38,8 @@ export const env = {
   dbSsl: toBoolean(process.env.DB_SSL, false),
   dbPoolMax: toNumber(process.env.DB_POOL_MAX, 10),
   dbPoolIdleMs: toNumber(process.env.DB_POOL_IDLE_MS, 30000),
-  dbPoolConnMs: toNumber(process.env.DB_POOL_CONN_MS, 2000)
+  dbPoolConnMs: toNumber(process.env.DB_POOL_CONN_MS, 2000),
+  scrapeLogEnabled: toBoolean(process.env.SCRAPE_LOG_ENABLED, false)
 };
 
 export const allowedSources: Record<string, boolean> = {

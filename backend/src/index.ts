@@ -22,6 +22,7 @@ import {
 import { authGuard, forbidObserver, signToken, verifyToken } from "./auth";
 import { uploadFile as uploadToSupabase } from "./supabaseStorage";
 import { registerScraperApiRoutes } from "./scraper/api";
+import { startScraperService } from "./scraper/service";
 import {
   addMessageReaction,
   bulkAddReadReceipts,
@@ -1587,6 +1588,7 @@ async function bootstrap() {
     },
   });
   await initDb();
+  void startScraperService();
   await registerScraperApiRoutes(app);
 
   app.get("/health", async () => ({ status: "ok" }));

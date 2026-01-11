@@ -25,6 +25,7 @@ export type ScrapeSummary = {
   jobLinksCreated: number;
   jobLinksSkipped: number;
   errors: number;
+  logEnabled: boolean;
 };
 
 const userAgents = [
@@ -56,7 +57,14 @@ const sourceConfigs: Record<string, ScrapeConfig> = {
   }
 };
 
-const log = (message: string, meta?: Record<string, unknown>): void => {
+export type ScrapeLogger = (message: string, meta?: Record<string, unknown>) => void;
+
+export type ScrapeOptions = {
+  logger?: ScrapeLogger;
+  logEnabled?: boolean;
+};
+
+const defaultLogger: ScrapeLogger = (message, meta) => {
   const suffix = meta ? ` ${JSON.stringify(meta)}` : "";
   console.log(`[${new Date().toISOString()}] ${message}${suffix}`);
 };
@@ -287,15 +295,20 @@ const resolvePageUrls = async (
 };
 
 export const scrapeUrls = async (
-  scrapeStore: ScrapeStore
+  scrapeStore: ScrapeStore,
+  options: ScrapeOptions = {}
 ): Promise<ScrapeSummary> => {
+  const logEnabled = options.logEnabled ?? env.scrapeLogEnabled;
+  const logger = options.logger ?? defaultLogger;
+  const log: ScrapeLogger = logEnabled ? logger : () => {};
   const summary: ScrapeSummary = {
     sourcesProcessed: 0,
     pagesVisited: 0,
     linksFound: 0,
     jobLinksCreated: 0,
     jobLinksSkipped: 0,
-    errors: 0
+    errors: 0,
+    logEnabled
   };
 
   log("Scrape started");
