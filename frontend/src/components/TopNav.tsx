@@ -259,6 +259,11 @@ export default function TopNav() {
             notificationCount={navNotifications.workspace}
           />
           <NavItem
+            href="/job-links"
+            label="Job links"
+            active={pathname.startsWith('/job-links')}
+          />
+          <NavItem
             href="/community"
             label="Community"
             active={pathname.startsWith('/community')}

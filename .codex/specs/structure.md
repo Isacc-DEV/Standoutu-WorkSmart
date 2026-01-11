@@ -38,6 +38,9 @@
       - README.md
     - src/
       - scraper/
+        - api/
+          - index.ts
+          - store.ts
         - seed/
           - data.json
           - run.ts
@@ -118,6 +121,15 @@
         - community/
           - CommunityContent.tsx
           - page.tsx
+        - job-links/
+          - components/
+            - JobLinksFilters.tsx
+            - JobLinksList.tsx
+          - api.ts
+          - JobLinksPage.tsx
+          - page.tsx
+          - types.ts
+          - utils.ts
         - manager/
           - applications/
             - page.tsx
