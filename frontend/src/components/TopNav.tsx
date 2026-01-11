@@ -206,15 +206,16 @@ function useNotificationBadges(count: number) {
     }
 
     const bridge = getDesktopBridge();
-    if (!bridge?.setAppBadge) return;
+    const setAppBadge = bridge?.setAppBadge;
+    if (!setAppBadge) return;
     const requestId = ++overlayRequestRef.current;
     if (count <= 0) {
-      void bridge.setAppBadge(0, null);
+      void setAppBadge(0, null);
       return;
     }
     void createOverlayBadge(count).then((dataUrl) => {
       if (overlayRequestRef.current !== requestId) return;
-      void bridge.setAppBadge(count, dataUrl);
+      void setAppBadge(count, dataUrl);
     });
   }, [count]);
 }
