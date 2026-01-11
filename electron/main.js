@@ -6,7 +6,7 @@ if (process.stdout) {
 if (process.stderr) {
   process.stderr.on('error', () => {});
 }
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -15,6 +15,8 @@ const https = require('https');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://38.79.97.159:3000';
 const API_BASE = process.env.API_BASE || process.env.BACKEND_URL || 'http://38.79.97.159:4000';
+// const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+// const API_BASE = process.env.API_BASE || process.env.BACKEND_URL || 'http://localhost:4000';
 const OPEN_DEVTOOLS = process.env.ELECTRON_DEVTOOLS === '1';
 const EMBEDDED_FRONTEND_PORT = Number(process.env.EMBEDDED_FRONTEND_PORT || 3300);
 const JOB_WINDOW_PARTITION = 'persist:smartwork-jobview';
@@ -23,6 +25,7 @@ let embeddedFrontendServer;
 let embeddedFrontendUrl;
 let embeddedNextApp;
 let embeddedFrontendProcess;
+let mainWindow;
 const jobWindows = new Map();
 
 function attachWebviewPopupHandler(contents) {
@@ -37,6 +40,14 @@ function attachWebviewPopupHandler(contents) {
     }
     return { action: 'deny' };
   });
+}
+
+function getMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused && !focused.isDestroyed()) return focused;
+  const windows = BrowserWindow.getAllWindows();
+  return windows.find((win) => !win.isDestroyed());
 }
 
 function shouldUseStandaloneFrontend() {
@@ -117,6 +128,12 @@ function createWindow() {
       contextIsolation: true,
       webviewTag: true,
     },
+  });
+  mainWindow = win;
+  win.on('closed', () => {
+    if (mainWindow === win) {
+      mainWindow = undefined;
+    }
   });
 
   let loadedFallback = false;
@@ -219,6 +236,31 @@ function createJobWindow(targetUrl) {
 
 app.whenReady().then(async () => {
   createWindow();
+
+  ipcMain.handle('set-app-badge', async (_event, payload) => {
+    const count = Math.max(0, Number(payload?.count) || 0);
+    const badgeDataUrl = typeof payload?.badgeDataUrl === 'string' ? payload.badgeDataUrl : null;
+    if (process.platform === 'darwin' && app.dock) {
+      app.dock.setBadge(count > 0 ? String(count) : '');
+    } else if (process.platform === 'win32') {
+      const win = getMainWindow();
+      if (win) {
+        if (count > 0 && badgeDataUrl) {
+          const image = nativeImage.createFromDataURL(badgeDataUrl);
+          if (!image.isEmpty()) {
+            win.setOverlayIcon(image, `${count} unread notifications`);
+          } else {
+            win.setOverlayIcon(null, '');
+          }
+        } else {
+          win.setOverlayIcon(null, '');
+        }
+      }
+    } else if (typeof app.setBadgeCount === 'function') {
+      app.setBadgeCount(count);
+    }
+    return { ok: true };
+  });
 
   ipcMain.handle('open-job-window', async (_event, targetUrl) => {
     try {

@@ -23,6 +23,188 @@ function formatNotificationCount(count: number) {
   return String(count);
 }
 
+const MAX_BADGE_COUNT = 99;
+const BADGE_COLOR = '#f43f5e';
+const BADGE_TEXT_COLOR = '#ffffff';
+const DOT_BORDER_COLOR = '#ffffff';
+
+type DesktopBridge = {
+  isElectron?: boolean;
+  setAppBadge?: (count: number, badgeDataUrl?: string | null) => Promise<void> | void;
+};
+
+function formatBadgeText(count: number) {
+  return count > MAX_BADGE_COUNT ? `${MAX_BADGE_COUNT}+` : String(count);
+}
+
+function stripBadgePrefix(title: string) {
+  return title.replace(/^\(\d+\+?\)\s*/, '');
+}
+
+function getDesktopBridge() {
+  if (typeof window === 'undefined') return undefined;
+  return (window as unknown as { smartwork?: DesktopBridge }).smartwork;
+}
+
+function getFaviconLink() {
+  if (typeof document === 'undefined') return null;
+  return document.querySelector<HTMLLinkElement>("link[rel~='icon']");
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Unable to load icon'));
+    img.src = src;
+  });
+}
+
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+
+function drawDotBadge(ctx: CanvasRenderingContext2D, size: number) {
+  const radius = Math.round(size * 0.18);
+  const offset = Math.round(size * 0.08);
+  const border = Math.max(1, Math.round(size * 0.04));
+  const cx = size - radius - offset;
+  const cy = radius + offset;
+  ctx.beginPath();
+  ctx.fillStyle = DOT_BORDER_COLOR;
+  ctx.arc(cx, cy, radius + border, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.fillStyle = BADGE_COLOR;
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+async function createBadgedFavicon(baseHref: string, count: number) {
+  if (count <= 0) return baseHref;
+  try {
+    const image = await loadImage(baseHref);
+    const naturalSize = Math.max(image.naturalWidth || 0, image.naturalHeight || 0);
+    const size = naturalSize >= 64 ? 64 : naturalSize || 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return baseHref;
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(image, 0, 0, size, size);
+    drawDotBadge(ctx, size);
+    return canvas.toDataURL('image/png');
+  } catch {
+    return baseHref;
+  }
+}
+
+async function createOverlayBadge(count: number) {
+  const size = 48;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const text = formatBadgeText(count);
+  const badgeHeight = Math.round(size * 0.8);
+  const fontSize = Math.round(size * 0.6);
+  const padding = Math.round(size * 0.28);
+  ctx.font = `700 ${fontSize}px Arial, sans-serif`;
+  const textWidth = ctx.measureText(text).width;
+  const badgeWidth = Math.max(badgeHeight, Math.round(textWidth + padding));
+  const x = Math.round((size - badgeWidth) / 2);
+  const y = Math.round((size - badgeHeight) / 2);
+  drawRoundedRect(ctx, x, y, badgeWidth, badgeHeight, badgeHeight / 2);
+  ctx.fillStyle = BADGE_COLOR;
+  ctx.fill();
+  ctx.fillStyle = BADGE_TEXT_COLOR;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + badgeWidth / 2, y + badgeHeight / 2);
+  return canvas.toDataURL('image/png');
+}
+
+function useNotificationBadges(count: number) {
+  const baseFaviconRef = useRef<string | null>(null);
+  const faviconRequestRef = useRef(0);
+  const overlayRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const cleaned = stripBadgePrefix(document.title || 'SmartWork');
+    if (document.title !== cleaned) {
+      document.title = cleaned;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const link = getFaviconLink();
+    if (!link) return;
+    if (!baseFaviconRef.current) {
+      baseFaviconRef.current = link.href;
+    }
+    const baseHref = baseFaviconRef.current;
+    const requestId = ++faviconRequestRef.current;
+    if (count <= 0) {
+      if (link.href !== baseHref) {
+        link.href = baseHref;
+      }
+      return;
+    }
+    void createBadgedFavicon(baseHref, count).then((href) => {
+      if (faviconRequestRef.current !== requestId) return;
+      if (href && link.href !== href) {
+        link.href = href;
+        link.type = 'image/png';
+      }
+    });
+  }, [count]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const badgeNavigator = navigator as Navigator & {
+      setAppBadge?: (value: number) => Promise<void>;
+      clearAppBadge?: () => Promise<void>;
+    };
+    if (badgeNavigator.setAppBadge) {
+      if (count > 0) {
+        void badgeNavigator.setAppBadge(count);
+      } else if (badgeNavigator.clearAppBadge) {
+        void badgeNavigator.clearAppBadge();
+      }
+    }
+
+    const bridge = getDesktopBridge();
+    if (!bridge?.setAppBadge) return;
+    const requestId = ++overlayRequestRef.current;
+    if (count <= 0) {
+      void bridge.setAppBadge(0, null);
+      return;
+    }
+    void createOverlayBadge(count).then((dataUrl) => {
+      if (overlayRequestRef.current !== requestId) return;
+      void bridge.setAppBadge(count, dataUrl);
+    });
+  }, [count]);
+}
+
 const emptyNotifications = {
   home: 0,
   workspace: 0,
@@ -151,6 +333,8 @@ export default function TopNav() {
   const [inboxError, setInboxError] = useState('');
   const [inboxItems, setInboxItems] = useState<NotificationItem[]>([]);
   const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useNotificationBadges(totalNotifications);
 
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
