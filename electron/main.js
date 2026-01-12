@@ -13,10 +13,10 @@ const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://38.79.97.159:3000';
-const API_BASE = process.env.API_BASE || process.env.BACKEND_URL || 'http://38.79.97.159:4000';
-// const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
-// const API_BASE = process.env.API_BASE || process.env.BACKEND_URL || 'http://localhost:4000';
+// const FRONTEND_URL = process.env.FRONTEND_URL || 'http://38.79.97.159:3000';
+// const API_BASE = process.env.API_BASE || process.env.BACKEND_URL || 'http://38.79.97.159:4000';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const API_BASE = process.env.API_BASE || process.env.BACKEND_URL || 'http://localhost:4000';
 const OPEN_DEVTOOLS = process.env.ELECTRON_DEVTOOLS === '1';
 const EMBEDDED_FRONTEND_PORT = Number(process.env.EMBEDDED_FRONTEND_PORT || 3300);
 const JOB_WINDOW_PARTITION = 'persist:smartwork-jobview';

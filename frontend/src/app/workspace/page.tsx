@@ -256,6 +256,7 @@ export default function Page() {
   const [jdDraft, setJdDraft] = useState("");
   const [jdCaptureLoading, setJdCaptureLoading] = useState(false);
   const [jdCaptureError, setJdCaptureError] = useState("");
+  const [bulletCountByCompany, setBulletCountByCompany] = useState<Record<string, number>>({});
   const [tailorLoading, setTailorLoading] = useState(false);
   const [tailorError, setTailorError] = useState("");
   const [tailorPdfLoading, setTailorPdfLoading] = useState(false);
@@ -403,6 +404,11 @@ export default function Page() {
     () => normalizeBaseResume(selectedProfile?.baseResume),
     [selectedProfile]
   );
+  const companyTitleKeys = useMemo(() => {
+    return (baseResumeView.workExperience ?? [])
+      .map((item) => buildPromptCompanyTitleKey(item))
+      .filter(Boolean);
+  }, [baseResumeView]);
   const selectedTemplate = useMemo(
     () => resumeTemplates.find((template) => template.id === resumeTemplateId),
     [resumeTemplates, resumeTemplateId]
@@ -479,6 +485,14 @@ export default function Page() {
     setLlmRawOutput("");
     setLlmMeta(null);
   }, [selectedProfileId]);
+
+  useEffect(() => {
+    if (!selectedProfileId) {
+      setBulletCountByCompany({});
+      return;
+    }
+    setBulletCountByCompany(buildBulletCountDefaults(companyTitleKeys));
+  }, [selectedProfileId, companyTitleKeys]);
 
   useEffect(() => {
     if (!resumeTemplates.length) {
@@ -1245,10 +1259,15 @@ export default function Page() {
     try {
       const baseResume = baseResumeView;
       const baseResumeText = JSON.stringify(baseResume, null, 2);
+      const bulletCountByCompanyPayload = buildBulletCountByCompanyPayload(
+        companyTitleKeys,
+        bulletCountByCompany
+      );
       const payload: Record<string, unknown> = {
         jobDescriptionText: jdDraft.trim(),
         baseResume,
         baseResumeText,
+        bulletCountByCompany: bulletCountByCompanyPayload,
         provider: aiProvider,
       };
       const response = (await api("/llm/tailor-resume", {
@@ -1295,10 +1314,15 @@ export default function Page() {
     try {
       const baseResume = baseResumeView;
       const baseResumeText = JSON.stringify(baseResume, null, 2);
+      const bulletCountByCompanyPayload = buildBulletCountByCompanyPayload(
+        companyTitleKeys,
+        bulletCountByCompany
+      );
       const payload: Record<string, unknown> = {
         jobDescriptionText: jdDraft.trim(),
         baseResume,
         baseResumeText,
+        bulletCountByCompany: bulletCountByCompanyPayload,
         provider: aiProvider,
       };
       const response = (await api("/llm/tailor-resume", {
@@ -1839,6 +1863,61 @@ export default function Page() {
                   {jdCaptureError}
                 </div>
               ) : null}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">
+                    Bullet counts
+                  </p>
+                  <p className="text-xs text-slate-500">Company Title - Role Number</p>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {companyTitleKeys.length ? (
+                    companyTitleKeys.map((companyTitle, index) => {
+                      const roleLabel = cleanString(
+                        baseResumeView.workExperience?.[index]?.roleTitle
+                      );
+                      const displayLabel = [companyTitle, roleLabel || `Role ${index + 1}`]
+                        .filter(Boolean)
+                        .join(" - ");
+                      const fallbackCount = index === 0 ? 3 : 1;
+                      const currentValue =
+                        typeof bulletCountByCompany[companyTitle] === "number"
+                          ? bulletCountByCompany[companyTitle]
+                          : fallbackCount;
+                      return (
+                        <label
+                          key={`${companyTitle}-${index}`}
+                          className="flex items-center justify-between gap-3 text-xs text-slate-700"
+                        >
+                          <span className="flex-1 truncate">{displayLabel}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            inputMode="numeric"
+                            value={currentValue}
+                            onChange={(event) => {
+                              const nextValue = event.target.valueAsNumber;
+                              const safeValue = Number.isFinite(nextValue)
+                                ? Math.max(0, nextValue)
+                                : 0;
+                              setBulletCountByCompany((prev) => ({
+                                ...prev,
+                                [companyTitle]: safeValue,
+                              }));
+                            }}
+                            className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 shadow-sm outline-none focus:ring-1 focus:ring-slate-300"
+                          />
+                        </label>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                      No work experience entries found.
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -2308,6 +2387,56 @@ function applyBulletAugmentation(base: BaseResume, augmentation: BulletAugmentat
     ...normalized,
     workExperience,
   };
+}
+
+function buildPromptCompanyTitleKey(item: WorkExperience) {
+  const source = item as Record<string, unknown>;
+  const explicit = cleanString(
+    (source.company_title ??
+      source.companyTitle ??
+      source.companyTitleText ??
+      source.company_title_text ??
+      source.display_title ??
+      source.displayTitle ??
+      source.heading) as string | number | null | undefined
+  );
+  if (explicit) return explicit;
+  const title = cleanString(
+    (source.title ?? source.roleTitle ?? source.role) as string | number | null | undefined
+  );
+  const company = cleanString(
+    (source.company ?? source.companyTitle ?? source.company_name) as
+      | string
+      | number
+      | null
+      | undefined
+  );
+  if (title && company) return `${title} - ${company}`;
+  return title || company || "";
+}
+
+function buildBulletCountDefaults(keys: string[]) {
+  const result: Record<string, number> = {};
+  keys.forEach((key, index) => {
+    if (!key) return;
+    result[key] = index === 0 ? 3 : 1;
+  });
+  return result;
+}
+
+function buildBulletCountByCompanyPayload(
+  keys: string[],
+  counts: Record<string, number>
+) {
+  const result: Record<string, number> = {};
+  keys.forEach((key, index) => {
+    if (!key) return;
+    const raw = counts[key];
+    const value =
+      typeof raw === "number" && Number.isFinite(raw) ? raw : index === 0 ? 3 : 1;
+    result[key] = value;
+  });
+  return result;
 }
 
 function buildExperienceKey(item: WorkExperience) {
