@@ -357,14 +357,18 @@ Each bullet must:
 
 8) Output inclusion rules:
 - You MUST include first company key and second company key, and both must have NON-EMPTY arrays.
+- For the first company, generate between 2 and 4 bullets (inclusive); for the second company, generate between 1 and 3 bullets (inclusive).
 - Other companies may be included only if needed (1–3 bullets max per company).
 - Keep total bullets small and high-signal.
 
 FINAL LITERAL GATE (must pass before output):
 - Confirm the first company array contains at least one bullet that includes REQUIRED_LANGUAGE AND REQUIRED_BACKEND_TECH.
 - Confirm the second company array contains at least one bullet that includes REQUIRED_LANGUAGE AND REQUIRED_BACKEND_TECH.
-- If either check fails, rewrite the bullets internally until both checks pass.
-- Then output ONLY the final valid JSON.`;
+- Confirm the first company array length is between 2 and 4 bullets (inclusive).
+- Confirm the second company array length is between 1 and 3 bullets (inclusive).
+- If any of these checks fail, rewrite the bullets internally until all checks pass.
+- Then output ONLY the final valid JSON.
+`;
 const DEFAULT_TAILOR_USER_PROMPT_TEMPLATE = `Generate NEW resume bullets aligned to the job description and assign them to experience entries by matching title/seniority and dates.
 
 job_description:
