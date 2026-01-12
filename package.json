@@ -12,5 +12,8 @@
     "dev:frontend": "npm --workspace frontend run dev",
     "dev:electron": "npm --workspace electron start",
     "lint": "npm --workspaces run lint"
+  },
+  "devDependencies": {
+    "7zip-bin": "^5.2.0"
   }
 }

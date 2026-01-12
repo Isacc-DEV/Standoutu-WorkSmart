@@ -6,11 +6,12 @@
   "scripts": {
     "start": "set ELECTRON_RUN_AS_NODE=&& ..\\node_modules\\electron\\dist\\electron.exe .",
     "prepare:embedded": "node ..\\scripts\\prepare-embedded-frontend.js",
-    "build": "npm run prepare:embedded && npx --yes electron-builder@24.13.3",
-    "build:unpacked": "npm run prepare:embedded && npx --yes electron-builder@24.13.3 --dir",
+    "build": "npm run prepare:embedded && node ..\\scripts\\ensure-electron-deps.js && npx --yes electron-builder@24.13.3",
+    "build:unpacked": "npm run prepare:embedded && node ..\\scripts\\ensure-electron-deps.js && npx --yes electron-builder@24.13.3 --dir",
     "lint": "echo \"no lint configured for electron\""
   },
   "devDependencies": {
+    "7zip-bin": "^5.2.0",
     "electron": "39.2.6",
     "electron-builder": "^24.13.3"
   },

@@ -53,7 +53,27 @@ function copyDir(src, dest) {
   fs.cpSync(src, dest, { recursive: true });
 }
 
+function hasNextBinary() {
+  const binDir = path.join(frontendDir, 'node_modules', '.bin');
+  return (
+    fs.existsSync(path.join(binDir, 'next')) ||
+    fs.existsSync(path.join(binDir, 'next.cmd')) ||
+    fs.existsSync(path.join(binDir, 'next.ps1'))
+  );
+}
+
+function ensureFrontendDeps() {
+  if (hasNextBinary()) return;
+  console.log('[embed] installing frontend dependencies');
+  run(
+    'npm',
+    ['--prefix', frontendDir, 'install', '--include=dev', '--no-package-lock'],
+    rootDir,
+  );
+}
+
 if (!skipBuild) {
+  ensureFrontendDeps();
   console.log('[embed] building frontend (next build)');
   run('npm', ['--workspace', 'frontend', 'run', 'build'], rootDir);
 }
