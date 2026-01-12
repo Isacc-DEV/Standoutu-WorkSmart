@@ -295,6 +295,14 @@ export default function Page() {
 
   useEffect(() => {
     if (!isClient || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const jobUrl = params.get("jobUrl");
+    if (!jobUrl) return;
+    setUrl(jobUrl);
+  }, [isClient]);
+
+  useEffect(() => {
+    if (!isClient || typeof window === "undefined") return;
     const storedProvider = window.localStorage.getItem("smartwork_ai_provider") ?? "";
     if (
       storedProvider === "OPENAI" ||

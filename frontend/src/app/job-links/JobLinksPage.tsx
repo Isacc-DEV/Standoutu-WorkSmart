@@ -112,6 +112,13 @@ export default function JobLinksPage() {
     setOffset(0);
   };
 
+  const handleOpenLink = useCallback(
+    (url: string) => {
+      router.push(`/workspace?jobUrl=${encodeURIComponent(url)}`);
+    },
+    [router]
+  );
+
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = total === 0 ? 1 : Math.floor(offset / limit) + 1;
   const showingStart = total === 0 ? 0 : offset + 1;
@@ -290,7 +297,12 @@ export default function JobLinksPage() {
 
         {error ? <JobLinksErrorState message={error} /> : null}
 
-        <JobLinksList items={links} loading={loadingLinks} startIndex={offset} />
+        <JobLinksList
+          items={links}
+          loading={loadingLinks}
+          startIndex={offset}
+          onOpenLink={handleOpenLink}
+        />
 
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200/70 bg-white px-5 py-4 text-sm text-slate-600 shadow-[0_18px_60px_-50px_rgba(15,23,42,0.4)]">
           <div>

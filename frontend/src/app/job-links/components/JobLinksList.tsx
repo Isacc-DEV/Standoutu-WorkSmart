@@ -9,6 +9,7 @@ type JobLinksListProps = {
   items: JobLink[];
   loading: boolean;
   startIndex: number;
+  onOpenLink?: (url: string) => void;
 };
 
 const STORAGE_KEY = "smartwork_job_links_clicked";
@@ -38,7 +39,8 @@ const writeClickedLinks = (links: Set<string>) => {
 export default function JobLinksList({
   items,
   loading,
-  startIndex
+  startIndex,
+  onOpenLink
 }: JobLinksListProps) {
   const [clickedLinks, setClickedLinks] = useState<Set<string>>(() => readClickedLinks());
 
@@ -54,6 +56,14 @@ export default function JobLinksList({
       writeClickedLinks(next);
       return next;
     });
+  };
+
+  const handleOpen = (event: React.MouseEvent<HTMLAnchorElement>, url: string) => {
+    handleLinkClick(url);
+    if (onOpenLink) {
+      event.preventDefault();
+      onOpenLink(url);
+    }
   };
 
   if (loading) {
@@ -100,9 +110,7 @@ export default function JobLinksList({
                   <td className="px-5 py-4">
                     <a
                       href={item.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={() => handleLinkClick(item.url)}
+                      onClick={(event) => handleOpen(event, item.url)}
                       className={`block max-w-[520px] truncate text-base font-semibold ${linkClass}`}
                       title={item.url}
                     >
